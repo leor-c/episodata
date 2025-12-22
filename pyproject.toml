@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "episodata"
+version = "0.1.0"
+description = "Lightweight episode/segment data structures for RL (TensorDict-friendly)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Leor Cohen" }
+]
+keywords = ["reinforcement-learning", "rl", "replay buffer", "tensordict", "dataset", "episode"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+]
+
+dependencies = [
+  "torch>=2.0",
+  "tensordict>=0.3.0",
+  "numpy>=1.21",
+  "loguru>=0.7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7",
+  "ruff>=0.5",
+  "mypy>=1.5",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests*", "docs*", "*__pycache__*"]
