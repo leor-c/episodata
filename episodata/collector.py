@@ -28,15 +28,15 @@ class Collector:
     """
 
     def __init__(
-        self,
-        dataset: EpisodeDataset,
-        num_envs: int,
-        *,
-        done_key: Optional[str] = "done",
-        terminated_key: Optional[str] = "terminated",
-        truncated_key: Optional[str] = "truncated",
-        episode_metadata_factory: Optional[Callable[[int, int], dict]] = None,
-        device: Optional[torch.device] = None,
+            self,
+            dataset: EpisodeDataset,
+            num_envs: int,
+            *,
+            done_key: Optional[str] = "done",
+            terminated_key: Optional[str] = "terminated",
+            truncated_key: Optional[str] = "truncated",
+            episode_metadata_factory: Optional[Callable[[int, int], dict]] = None,
+            device: Optional[torch.device] = None,
     ) -> None:
         self.dataset = dataset
         self.num_envs = int(num_envs)
@@ -51,11 +51,15 @@ class Collector:
 
         for env_idx in range(self.num_envs):
             ep = self._new_episode(env_idx)
-            self.dataset.add(ep)   # include active episodes in dataset
+            self.dataset.add(ep)  # include active episodes in dataset
             self._active.append(ep)
 
     def active_episode(self, env_idx: int) -> Episode:
         return self._active[env_idx]
+
+    @property
+    def active_episodes(self) -> list[Episode]:
+        return self._active
 
     def active_ids(self) -> List[int]:
         return [ep.episode_id for ep in self._active]
@@ -100,6 +104,9 @@ class Collector:
                 self.dataset.add(new_ep)
                 self._active[env_idx] = new_ep
                 self._expect_first[env_idx] = True  # next digest row = reset obs
+
+                if self.dataset.storage_path is not None:
+                    ep.save(self.dataset.get_episode_save_path(ep))
 
         return completed
 

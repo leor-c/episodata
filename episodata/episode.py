@@ -302,6 +302,11 @@ class Episode:
         data_td = outer["data"]
         meta_td = outer["meta"]
 
+        if data_td.batch_size == torch.Size([]):
+            # infer time dimension from a canonical key
+            assert 'next_obs' in list(data_td.keys())
+            data_td.auto_batch_size_()
+
         # 3) Decode metadata
         import json
         episode_id = int(meta_td["episode_id"].item())

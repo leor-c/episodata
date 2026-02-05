@@ -24,8 +24,9 @@ class EpisodeDataset:
         will do that to produce (segment) minibatches.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, storage_path: Optional[Path] = None) -> None:
         self._episodes: Dict[int, Episode] = {}
+        self.storage_path = storage_path
 
     # ---- basic container API ----
     def __len__(self) -> int:
@@ -69,8 +70,14 @@ class EpisodeDataset:
             return sum(e.length for e in self._episodes.values() if e.is_complete)
         return sum(e.length for e in self._episodes.values())
 
+    def get_episode_save_path(self, episode: Episode, directory: Optional[Path] = None):
+        if directory is None:
+            assert self.storage_path is not None, f"Storage path not set"
+            directory = self.storage_path
+        return directory / "episode_{:06d}.td".format(episode.episode_id)
+
     # ---- persistence helpers ----
-    def save(self, directory: Union[str, Path], pattern: str = "episode_{:06d}.td") -> List[Path]:
+    def save(self, directory: Optional[Union[str, Path]] = None) -> List[Path]:
         """
         Save every episode to 'directory/pattern.format(episode_id)'.
         Returns a list of saved paths.
@@ -79,23 +86,24 @@ class EpisodeDataset:
           - Default extension is '.td' to reflect TensorDict-based single-file saves.
           - If you prefer another extension, change `pattern` accordingly.
         """
-        directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
+        if directory is not None:
+            directory = Path(directory)
+            directory.mkdir(parents=True, exist_ok=True)
         out: List[Path] = []
         for ep in self._episodes.values():
             if ep.length >= 2:
-                path = directory / pattern.format(ep.episode_id)
+                path = self.get_episode_save_path(ep, directory)
                 ep.save(path)  # Episode.save writes a single TensorDict file
                 out.append(path)
         return out
 
     def load_dir(
-        self,
-        directory: Union[str, Path],
-        glob: str = "*.td",
-        *,
-        map_location=None,
-        overwrite: bool = True,
+            self,
+            directory: Union[str, Path],
+            glob: str = "*.td",
+            *,
+            map_location=None,
+            overwrite: bool = True,
     ) -> List[int]:
         """
         Load all episode files from directory (created by Episode.save).
@@ -115,7 +123,7 @@ class EpisodeDataset:
             self.add(ep, overwrite=overwrite)
             ids.append(ep.episode_id)
         return ids
-    
+
 
 class SegmentsDataset(Dataset):
     def __init__(self, episode_dataset: EpisodeDataset, segment_length: int):
@@ -131,7 +139,7 @@ class SegmentsDataset(Dataset):
         self.process_dataset()
 
     def process_dataset(self):
-        # compute the number of samples in each episode, and store a data structure 
+        # compute the number of samples in each episode, and store a data structure
         # for look-up.
         # discard empty episodes
         episodes_num_segments = []
@@ -150,15 +158,15 @@ class SegmentsDataset(Dataset):
 
     def __len__(self):
         return self._total_segments if self._total_segments is not None else 0
-    
+
     def __getitem__(self, index):
         if self._total_segments is None or self._episode_segments_cumsum is None:
             raise RuntimeError(f"Dataset was not pre-processed")
         if index >= self._total_segments or index < 0:
             raise ValueError(f"Index '{index}' out of bounds ({self._total_segments})")
-        
+
         ep_index = np.searchsorted(self._episode_segments_cumsum, index, side='right')
-        segment_index = index - self._episode_segments_cumsum[ep_index-1] if ep_index > 0 else index
+        segment_index = index - self._episode_segments_cumsum[ep_index - 1] if ep_index > 0 else index
         ep_id = self._ids[ep_index]
         segment = self.episode_dataset.get(ep_id).segment(
             start=segment_index,
