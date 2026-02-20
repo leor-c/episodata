@@ -146,7 +146,7 @@ class SegmentsDataset(Dataset):
         ids = []
         for ep_id, ep in zip(self.episode_dataset.ids(), self.episode_dataset.__iter__()):
             l = ep.length
-            if l == 0:
+            if l < 2:
                 continue
             num_segments = max(1, l - self.segment_length + 1)
             episodes_num_segments.append(num_segments)
