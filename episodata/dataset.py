@@ -152,7 +152,7 @@ class SegmentsDataset(Dataset):
             episodes_num_segments.append(num_segments)
             ids.append(ep_id)
 
-        self._total_segments = np.sum(episodes_num_segments)
+        self._total_segments = int(np.sum(episodes_num_segments))
         self._episode_segments_cumsum = np.cumsum(episodes_num_segments)
         self._ids = ids
 

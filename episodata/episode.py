@@ -124,7 +124,7 @@ class Episode:
         try:
             term = bool(td.get("terminated").item())
             trunc = bool(td.get("truncated").item())
-        except Exception:
+        except (RuntimeError, ValueError):
             term = trunc = False
         if term or trunc:
             self.finalize()
@@ -198,7 +198,7 @@ class Episode:
                 pad_dict = {}
                 for k in seg_real.keys():
                     v = proto_step.get(k)
-                    if 'obs' in k:
+                    if isinstance(v, TensorDict):
                         pad_v = TensorDict(
                             {
                                 k_obs: torch.zeros(pad_len, *v_obs.shape, device=v_obs.device, dtype=v_obs.dtype)
@@ -260,7 +260,7 @@ class Episode:
 
         # metadata to store as simple tensors
         meta = {
-            "version": self.VERSION,
+            "version": torch.tensor(bytearray(self.VERSION, "utf-8"), dtype=torch.uint8),
             "episode_id": torch.tensor(self.episode_id, dtype=torch.int64),
             "complete": torch.tensor(bool(self._complete)),
         }
@@ -338,7 +338,7 @@ class Episode:
         }, batch_size=[])
 
         for k, v in step_like.items():
-            if k not in td0:
+            if k not in td0 and k != "obs":  # "obs" was already aliased to "next_obs"
                 td0[k] = v.to(self._device)
 
         self._steps.append(td0)
