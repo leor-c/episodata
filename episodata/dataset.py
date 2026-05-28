@@ -135,15 +135,17 @@ class SegmentsDataset(Dataset):
         self._total_segments = None
         self._episode_segments_cumsum = None
         self._ids = None
+        self._ep_flats: Dict[int, Dict[str, torch.Tensor]] = {}
+        self._ep_lengths: Dict[int, int] = {}
 
         self.process_dataset()
 
     def process_dataset(self):
-        # compute the number of samples in each episode, and store a data structure
-        # for look-up.
-        # discard empty episodes
         episodes_num_segments = []
         ids = []
+        ep_flats: Dict[int, Dict[str, torch.Tensor]] = {}
+        ep_lengths: Dict[int, int] = {}
+
         for ep_id, ep in zip(self.episode_dataset.ids(), self.episode_dataset.__iter__()):
             l = ep.length
             if l < 2:
@@ -151,10 +153,14 @@ class SegmentsDataset(Dataset):
             num_segments = max(1, l - self.segment_length + 1)
             episodes_num_segments.append(num_segments)
             ids.append(ep_id)
+            ep_flats[ep_id] = ep.all_data   # flat dict[str, Tensor], cached once
+            ep_lengths[ep_id] = l
 
         self._total_segments = int(np.sum(episodes_num_segments))
         self._episode_segments_cumsum = np.cumsum(episodes_num_segments)
         self._ids = ids
+        self._ep_flats = ep_flats
+        self._ep_lengths = ep_lengths
 
     def __len__(self):
         return self._total_segments if self._total_segments is not None else 0
@@ -168,9 +174,29 @@ class SegmentsDataset(Dataset):
         ep_index = np.searchsorted(self._episode_segments_cumsum, index, side='right')
         segment_index = index - self._episode_segments_cumsum[ep_index - 1] if ep_index > 0 else index
         ep_id = self._ids[ep_index]
-        segment = self.episode_dataset.get(ep_id).segment(
-            start=segment_index,
-            end=segment_index + self.segment_length,
-            should_pad=True,
-        )
-        return segment
+        flat = self._ep_flats[ep_id]
+        ep_len = self._ep_lengths[ep_id]
+
+        T = self.segment_length
+        start = segment_index
+        real_end = min(start + T, ep_len)
+        pad_len = (start + T) - real_end
+
+        def _slice(k: str, v: torch.Tensor) -> torch.Tensor:
+            real = v[start:real_end]
+            if pad_len == 0:
+                return real
+            pad = real.new_zeros((pad_len,) + real.shape[1:])
+            if k.rsplit(".", 1)[-1] == "terminated":
+                pad = pad.bool().fill_(True)
+            return torch.cat([real, pad], dim=0)
+
+        sliced = {k: _slice(k, v) for k, v in flat.items()}
+
+        first_val = sliced[next(iter(sliced))]
+        is_real = torch.zeros(T, dtype=torch.bool, device=first_val.device)
+        is_real[:real_end - start] = True
+        sliced["pad_mask"] = is_real
+
+        dev = first_val.device
+        return TensorDict(sliced, batch_size=[T], device=dev).unflatten_keys(".")

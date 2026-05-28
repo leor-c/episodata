@@ -4,11 +4,9 @@ from __future__ import annotations
 from typing import Optional, List, Sequence, Union, Dict, Any
 from pathlib import Path
 import threading
-from loguru import logger
 
 import torch
 from tensordict.tensordict import TensorDict
-import tensordict as td
 
 
 def _stack_steps(steps: List[TensorDict]) -> TensorDict:
@@ -22,12 +20,12 @@ class Episode:
     """
     Episode container with a consistent per-step schema and two-step backfill.
 
-    Assumptions:
-      - At least two `extend()` calls per episode:
-          1) first call after reset: only {obs or next_obs}
-          2) second call: full step (action, next_obs, reward, terminated, truncated)
-      - After finalize(), steps are stacked into a single TensorDict with batch_size=[T]
-        and the raw step list is cleared to save memory.
+    Internal storage after finalize(): a flat dict[str, Tensor] with dotted keys
+    (e.g. 'next_obs.image.frame'). This lets SegmentsDataset.__getitem__ do
+    plain tensor slicing with no TensorDict overhead in the hot path.
+
+    Public API still returns TensorDicts; `data` and `segment()` reconstruct them
+    from the flat dict on demand.
 
     Unified per-step schema (scalar batch):
       ("action", "next_obs", "reward", "terminated", "truncated", "is_first")
@@ -47,7 +45,7 @@ class Episode:
     __slots__ = (
         "_device",
         "_steps",
-        "_data",
+        "_flat",        # dict[str, Tensor] with dotted keys; set after finalize()
         "_finalized",
         "_complete",
         "episode_id",
@@ -69,8 +67,8 @@ class Episode:
         self.metadata: Dict[str, Any] = dict(metadata) if metadata is not None else {}
 
         self._device: Optional[torch.device] = device
-        self._steps: List[TensorDict] = []       # list of scalar-batch steps
-        self._data: Optional[TensorDict] = None  # stacked TD with batch_size=[T]
+        self._steps: List[TensorDict] = []
+        self._flat: Optional[Dict[str, torch.Tensor]] = None
         self._finalized: bool = False
         self._complete: bool = False
 
@@ -80,22 +78,36 @@ class Episode:
         return self._complete
 
     @property
-    def device(self) -> Optional[torch.device]:
-        if self._data is not None:
-            return self._data.device
-        return self._device
-
-    @property
     def length(self) -> int:
         if self._complete:
-            return int(self._data.batch_size[0])  # type: ignore[union-attr]
+            return next(iter(self._flat.values())).shape[0]
         return len(self._steps)
 
     @property
+    def device(self) -> Optional[torch.device]:
+        if self._complete and self._flat:
+            return next(iter(self._flat.values())).device
+        return self._device
+
+    @property
     def data(self) -> TensorDict:
-        if not self._complete or self._data is None:
+        """Full episode as TensorDict (backward-compat). Reconstructed from flat storage."""
+        if not self._complete:
             raise RuntimeError("Episode not yet finalized; call finalize() first.")
-        return self._data
+        return TensorDict(self._flat, batch_size=[self.length], device=self.device).unflatten_keys(self.__SEPARATOR)
+
+    @property
+    def all_data(self) -> Dict[str, torch.Tensor]:
+        """
+        Flat dict[str, Tensor] with dotted keys, regardless of finalization state.
+        For finalized episodes this is a direct reference (no copy).
+        For unfinalized episodes the steps are stacked on the fly — avoid calling
+        in the training hot path.
+        """
+        if self._complete:
+            return self._flat
+        stacked = TensorDict.stack(self._steps, dim=0)
+        return dict(stacked.flatten_keys(self.__SEPARATOR).items())
 
     # ---- public API ----
     def extend(self, step_like: TensorDict) -> None:
@@ -120,7 +132,6 @@ class Episode:
         if self.length == 2:
             self._backfill_first_with_second()
 
-        # --- NEW: auto-finalize when terminated | truncated is True on this step ---
         try:
             term = bool(td.get("terminated").item())
             trunc = bool(td.get("truncated").item())
@@ -130,12 +141,13 @@ class Episode:
             self.finalize()
 
     def finalize(self) -> None:
-        """Stack steps into a single TensorDict (batch_size=[T]) and mark complete."""
+        """Stack steps into flat dict[str, Tensor] and mark complete."""
         if self._finalized:
             return
         if self.length < 2:
             raise RuntimeError("Episode expects at least two steps before finalize().")
-        self._data = _stack_steps(self._steps)
+        stacked = _stack_steps(self._steps)
+        self._flat = dict(stacked.flatten_keys(self.__SEPARATOR).items())
         self._steps.clear()
         self._complete = True
         self._finalized = True
@@ -144,8 +156,8 @@ class Episode:
         """Move internal tensors to the given device (pre- or post-finalize)."""
         dev = torch.device(device)
         self._device = dev
-        if self._complete and self._data is not None:
-            self._data = self._data.to(dev)
+        if self._complete:
+            self._flat = {k: v.to(dev) for k, v in self._flat.items()}
         else:
             for i, td in enumerate(self._steps):
                 self._steps[i] = td.to(dev)
@@ -163,102 +175,57 @@ class Episode:
         if start < 0 or end < 0 or end < start:
             raise ValueError(f"Invalid segment bounds: start={start}, end={end}")
 
-        # Get a stacked view of the episode (finalized or temporary)
-        if self._complete:
-            td_all = self._data
-            T = self.length
-        else:
-            T = self.length
-            if not stack_unfinalized:
-                raise RuntimeError("Episode not finalized; set stack_unfinalized=True to segment.")
-            td_all = TensorDict.stack(self._steps, dim=0)
+        if not self._complete and not stack_unfinalized:
+            raise RuntimeError("Episode not finalized; set stack_unfinalized=True to segment.")
 
-        span = end - start  # requested length
+        flat = self.all_data
+        T = self.length
+        span = end - start
+        real_end = min(end, T)
+        pad_len = end - real_end
 
-        if end <= T:
-            seg = td_all[start:end]
-            # pad_mask: all real data
-            pad_mask = torch.ones(span, dtype=torch.bool, device=seg.device)
-        else:
-            if not should_pad:
-                raise IndexError(
-                    f"end={end} exceeds episode length {T}. Set should_pad=True to allow padding."
-                )
+        if pad_len > 0 and not should_pad:
+            raise IndexError(
+                f"end={end} exceeds episode length {T}. Set should_pad=True to allow padding."
+            )
 
-            real_end = min(end, T)
-            seg_real = td_all[start:real_end]
+        def _slice(k: str, v: torch.Tensor) -> torch.Tensor:
+            real = v[start:real_end]
+            if pad_len == 0:
+                return real
+            pad = real.new_zeros((pad_len,) + real.shape[1:])
+            leaf = k.rsplit(self.__SEPARATOR, 1)[-1]
+            if leaf == "terminated":
+                pad = pad.bool().fill_(True)
+            return torch.cat([real, pad], dim=0)
 
-            pad_len = end - real_end
-            if pad_len <= 0:
-                seg = seg_real
-                pad_mask = torch.ones(seg.batch_size[0], dtype=torch.bool, device=seg_real.device)
-            else:
-                # Build pad batch using last real step as prototype
-                proto_step = td_all[T - 1]  # last real step in episode
-                pad_dict = {}
-                for k in seg_real.keys():
-                    v = proto_step.get(k)
-                    if isinstance(v, TensorDict):
-                        pad_v = TensorDict(
-                            {
-                                k_obs: torch.zeros(pad_len, *v_obs.shape, device=v_obs.device, dtype=v_obs.dtype)
-                                for k_obs, v_obs in v.items()
-                            },
-                            batch_size=[pad_len],
-                        )
-                    else:
-                        pad_v = torch.zeros((pad_len,) + v.shape, dtype=v.dtype, device=v.device)
+        sliced: Dict[str, torch.Tensor] = {k: _slice(k, v) for k, v in flat.items()}
 
-                    if k == "reward":
-                        pad_v = pad_v.to(torch.float32)
-                    elif k == "terminated":
-                        pad_v[...] = True
-                    elif k == "truncated":
-                        pad_v[...] = False
-                    elif k == "is_first":
-                        pad_v[...] = False
-                    pad_dict[k] = pad_v
-
-                seg_pad = TensorDict(pad_dict, batch_size=[pad_len])
-                seg = TensorDict.cat([seg_real, seg_pad], dim=0)
-
-                # pad_mask: ones for real part, zeros for padded tail
-                pad_mask = torch.cat([
-                    torch.ones(seg_real.batch_size[0], dtype=torch.bool, device=seg_real.device),
-                    torch.zeros(pad_len, dtype=torch.bool, device=seg_real.device),
-                ], dim=0)
-
-        # attach pad_mask
-        seg.set("pad_mask", pad_mask)
+        first_val = sliced[next(iter(sliced))]
+        pad_mask = torch.zeros(span, dtype=torch.bool, device=first_val.device)
+        pad_mask[:real_end - start] = True
+        sliced["pad_mask"] = pad_mask
 
         if drop_fields:
-            for k in drop_fields:
-                if k in seg.keys():
-                    del seg[k]
+            sep = self.__SEPARATOR
+            for field in drop_fields:
+                for k in [k for k in list(sliced) if k == field or k.startswith(field + sep)]:
+                    del sliced[k]
 
-        return seg
-
+        dev = sliced[next(iter(sliced))].device
+        return TensorDict(sliced, batch_size=[span], device=dev).unflatten_keys(self.__SEPARATOR)
 
     def save(self, path: Union[str, Path], *, metadata: Optional[Dict[str, Any]] = None) -> None:
-        """
-        Save episode to a single file safely, wrapping data + metadata in an outer TensorDict.
-
-        Structure:
-            outer["data"] : time-stacked episode TensorDict  (batch_size=[T])
-            outer["meta"] : scalar TensorDict with episode metadata as tensors
-        """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        # stack if needed
-        if self._complete and self._data is not None:
-            data_td = self._data
+        if self._complete:
+            data_td = TensorDict(self._flat, batch_size=[self.length], device=self.device).unflatten_keys(self.__SEPARATOR)
         else:
             if self.length < 2:
                 raise RuntimeError("Cannot save: episode has fewer than two steps and is not finalized.")
             data_td = TensorDict.stack(self._steps, dim=0)
 
-        # metadata to store as simple tensors
         meta = {
             "version": torch.tensor(bytearray(self.VERSION, "utf-8"), dtype=torch.uint8),
             "episode_id": torch.tensor(self.episode_id, dtype=torch.int64),
@@ -268,19 +235,13 @@ class Episode:
             meta["device_str"] = torch.tensor(
                 bytearray(str(self.device), "utf-8"), dtype=torch.uint8
             )
-        # optional user metadata -> JSON bytes
         import json
         meta_str = json.dumps({**self.metadata, **(metadata or {})}, ensure_ascii=False)
         meta["metadata_json"] = torch.tensor(bytearray(meta_str, "utf-8"), dtype=torch.uint8)
 
         meta_td = TensorDict(meta, batch_size=[])
-
-        # Outer TensorDict — batch_size=[] so it’s scalar
         outer = TensorDict({"data": data_td, "meta": meta_td}, batch_size=[])
-
-        # Save safely with no pickling of custom classes
-        flat = outer.flatten_keys(separator=self.__SEPARATOR)
-        torch.save(flat, str(path))
+        torch.save(outer.flatten_keys(separator=self.__SEPARATOR), str(path))
 
     @classmethod
     def load(
@@ -291,10 +252,8 @@ class Episode:
     ) -> "Episode":
         path = Path(path)
 
-        # 1) Load outer TD (no kwargs for max compatibility)
         outer = torch.load(str(path), weights_only=False).unflatten_keys(separator=cls.__SEPARATOR)
 
-        # 2) Move to target device if requested
         if map_location is not None:
             dev = map_location if isinstance(map_location, torch.device) else torch.device(map_location)
             outer = outer.to(dev)
@@ -303,24 +262,21 @@ class Episode:
         meta_td = outer["meta"]
 
         if data_td.batch_size == torch.Size([]):
-            # infer time dimension from a canonical key
             assert 'next_obs' in list(data_td.keys())
             data_td.auto_batch_size_()
 
-        # 3) Decode metadata
         import json
         episode_id = int(meta_td["episode_id"].item())
         metadata_json = bytes(meta_td["metadata_json"].tolist()).decode("utf-8")
         meta_user = json.loads(metadata_json) if metadata_json else {}
 
-        # 4) Build finalized Episode
-        ep = cls(episode_id=episode_id, device=data_td.device, metadata=meta_user)
-        ep._data = data_td
+        ep = cls(episode_id=episode_id, metadata=meta_user)
+        ep._flat = dict(data_td.flatten_keys(cls.__SEPARATOR).items())
+        ep._device = next(iter(ep._flat.values())).device
         ep._steps = []
         ep._complete = True
         ep._finalized = True
         return ep
-
 
     # ---- internals ----
     def _store_partial_first(self, step_like: TensorDict) -> None:
@@ -338,7 +294,7 @@ class Episode:
         }, batch_size=[])
 
         for k, v in step_like.items():
-            if k not in td0 and k != "obs":  # "obs" was already aliased to "next_obs"
+            if k not in td0 and k != "obs":
                 td0[k] = v.to(self._device)
 
         self._steps.append(td0)
