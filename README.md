@@ -111,6 +111,29 @@ t.observations, t.actions, t.rewards, t.next_observations, t.terminated
 dataset.loader(sequence_length=8, filter=lambda ep: ep.terminated)
 ```
 
+### Map-style access (`torch.utils.data.DataLoader`)
+
+`loader()` is an infinite, shuffled, with-replacement stream. `segments()`
+gives the same fixed-length windows as an indexable, map-style dataset
+instead — its `__len__`/`__getitem__` satisfy `DataLoader`'s map-style
+protocol by duck typing, so reads (including per-episode decompression on
+disk-backed backends) get sharded across `num_workers` worker processes:
+
+```python
+from torch.utils.data import DataLoader
+
+segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=8)
+loader = DataLoader(
+    segments, batch_size=32, shuffle=True,
+    num_workers=4, collate_fn=segments.collate,
+)
+for batch in loader: ...   # episodata.Batch, arrays [B, L, ...]
+```
+
+`episodata` itself never imports torch — `segments[i]` returns a `Segment`
+(unbatched arrays `[L, ...]`) and works standalone with no torch installed.
+
+
 ### Online episode append
 
 The write API mirrors the Gymnasium loop one-to-one: `add_reset` records

@@ -1,0 +1,122 @@
+import numpy as np
+import pytest
+
+from tests.conftest import make_episode
+
+
+def test_len_and_getitem_shapes(dataset):
+    segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=4)
+    # episode lengths 10 and 7 -> (10-4+1) + (7-4+1) = 11 windows
+    assert len(segments) == 11
+    segment = segments[0]
+    assert segment.data["front_camera"].shape == (4, 3, 8, 8)
+    assert segment.observation.image.front_camera.shape == (4, 3, 8, 8)
+    assert segment.data["state"].shape == (4, 5)
+    assert segment.terminated.shape == (4,)
+    assert segment.truncated.shape == (4,)
+
+
+def test_getitem_out_of_range_raises(dataset):
+    segments = dataset.segments(fields=["reward"], sequence_length=4)
+    with pytest.raises(IndexError):
+        segments[len(segments)]
+
+
+def test_matches_sequential_loader_scan(dataset):
+    """SegmentDataset and Loader share SegmentIndex/read_segment, so a
+    sequential (unshuffled) Loader scan and direct segment[i] access must
+    agree window-for-window."""
+    loader = dataset.loader(fields=["reward"], sequence_length=4, batch_size=3, shuffle=False)
+    scanned = [w for batch in loader for w in batch["reward"]]
+    segments = dataset.segments(fields=["reward"], sequence_length=4)
+    assert len(segments) == len(scanned)
+    for i, expected in enumerate(scanned):
+        assert np.array_equal(segments[i].data["reward"], expected)
+
+
+def test_terminated_flag_only_on_final_step(dataset):
+    segments = dataset.segments(fields=["reward"], sequence_length=4)
+    # episode 0 (length 10, terminated) contributes windows 0..6; only the
+    # window ending at step 9 carries a True, on its last position.
+    for i in range(6):
+        assert segments[i].terminated.sum() == 0
+    assert segments[6].terminated[3] and segments[6].terminated.sum() == 1
+    # episode 1 is neither terminated nor truncated
+    for i in range(7, len(segments)):
+        assert segments[i].terminated.sum() == 0
+        assert segments[i].truncated.sum() == 0
+
+
+def test_collate_matches_loader_batch_shape(dataset):
+    segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=4)
+    items = [segments[i] for i in (6, 0, 7)]
+    batch = segments.collate(items)
+    assert batch["front_camera"].shape == (3, 4, 3, 8, 8)
+    assert batch["state"].shape == (3, 4, 5)
+    assert batch.terminated.shape == (3, 4)
+    assert batch.terminated[0, 3]  # item 6 carries the terminal flag
+    assert batch.terminated[1:].sum() == 0
+    for row, item in enumerate(items):
+        assert np.array_equal(batch["state"][row], item.data["state"])
+
+
+def test_collate_context_target(dataset):
+    segments = dataset.segments(context_length=2, target_length=3)
+    items = [segments[i] for i in range(4)]
+    batch = segments.collate(items)
+    assert batch["state"].shape == (4, 5, 5)
+    assert batch.context["state"].shape == (4, 2, 5)
+    assert batch.target["state"].shape == (4, 3, 5)
+    assert np.array_equal(
+        np.concatenate([batch.context["state"], batch.target["state"]], axis=1),
+        batch["state"],
+    )
+
+
+def test_filter(dataset):
+    segments = dataset.segments(
+        fields=["reward"], sequence_length=2, filter=lambda ep: len(ep) > 8
+    )
+    # only episode 0 (length 10) passes the filter -> 9 windows
+    assert len(segments) == 9
+
+
+def test_empty_index_when_window_too_long(dataset):
+    segments = dataset.segments(sequence_length=100)
+    assert len(segments) == 0
+    with pytest.raises(IndexError):
+        segments[0]
+
+
+def test_torch_dataloader_integration(dataset):
+    torch = pytest.importorskip("torch")
+    from torch.utils.data import DataLoader
+
+    segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=4)
+    loader = DataLoader(
+        segments, batch_size=6, shuffle=True, num_workers=0, collate_fn=segments.collate
+    )
+    batch = next(iter(loader))
+    assert batch["front_camera"].shape == (6, 4, 3, 8, 8)
+    assert batch["state"].shape == (6, 4, 5)
+
+
+def test_torch_dataloader_multiprocess(backend_name, dataset_path):
+    """Real multi-worker read parallelism only matters for a disk-backed
+    backend (npz_directory does synchronous decompression per read)."""
+    if backend_name != "npz_directory":
+        pytest.skip("multiprocess benefit is specific to disk-backed backends")
+    torch = pytest.importorskip("torch")
+    from torch.utils.data import DataLoader
+
+    from episodata import Dataset
+
+    episodes = [make_episode(10, seed=0), make_episode(7, seed=1, terminated=False)]
+    ds = Dataset.from_episodes(episodes, path=dataset_path, backend=backend_name)
+    segments = ds.segments(fields=["front_camera", "state", "action"], sequence_length=4)
+    loader = DataLoader(
+        segments, batch_size=4, shuffle=True, num_workers=2, collate_fn=segments.collate
+    )
+    batches = [batch for _, batch in zip(range(3), loader)]
+    assert len(batches) == 3
+    assert batches[0]["front_camera"].shape == (4, 4, 3, 8, 8)
