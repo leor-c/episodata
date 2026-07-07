@@ -1,0 +1,16 @@
+[project]
+name = "episodata"
+version = "0.1.0"
+description = "Unified episode dataset library for world models and control"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["episodata"]

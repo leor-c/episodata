@@ -1,0 +1,236 @@
+import numpy as np
+import pytest
+
+from episodata import Dataset, DatasetSchema
+from tests.conftest import make_episode
+
+
+def test_basic_properties(dataset):
+    assert dataset.num_episodes == 2
+    episode = dataset.episode(0)
+    assert len(episode) == 10
+    assert episode.terminated and not episode.truncated and not episode.ongoing
+    assert not dataset.episode(1).terminated
+
+
+def test_segment_matches_source(dataset):
+    source = make_episode(10, seed=0)
+    segment = dataset.episode(0).segment(2, 6, fields=["front_camera", "reward"])
+    assert np.array_equal(segment["front_camera"], source["observations"]["front_camera"][2:6])
+    assert np.array_equal(segment["reward"], source["rewards"][2:6])
+    step = dataset.episode(0).step(-1)
+    assert np.array_equal(step["state"], source["observations"]["state"][-1])
+
+
+def test_persistence_roundtrip(tmp_path):
+    path = str(tmp_path / "ds")
+    original = Dataset.from_episodes([make_episode(6)], path=path)
+    reopened = Dataset.open(path)
+    assert reopened.schema.to_dict() == original.schema.to_dict()
+    assert reopened.num_episodes == 1
+    assert np.array_equal(
+        reopened.episode(0).read()["state"], original.episode(0).read()["state"]
+    )
+
+
+def test_schema_not_reinferred_on_open(tmp_path):
+    path = str(tmp_path / "ds")
+    dataset = Dataset.from_episodes([make_episode(6)], path=path)
+    dataset.rename_space("vector", "proprio")
+    reopened = Dataset.open(path)
+    assert "proprio" in reopened.schema.spaces
+    obs = reopened.episode(0).segment(0, 2)
+    assert obs.proprio.state.shape == (2, 5)
+
+
+def test_online_append(backend_name, dataset_path):
+    schema = DatasetSchema.infer(make_episode(3))
+    dataset = Dataset.create(schema, path=dataset_path, backend=backend_name)
+    assert dataset.num_episodes == 0
+
+    writer = dataset.new_episode()
+    episode = dataset.episode(writer.episode_id)
+    for t in range(5):
+        writer.add_step(
+            {
+                "observations": {
+                    "front_camera": np.full((3, 8, 8), t, dtype=np.uint8),
+                    "wrist_camera": np.zeros((3, 8, 8), dtype=np.uint8),
+                    "state": np.zeros(5, dtype=np.float32),
+                },
+                "actions": {"action": np.zeros(2, dtype=np.float32)},
+                "rewards": float(t),
+            }
+        )
+    assert episode.ongoing and len(episode) == 5
+    # ongoing episodes are readable
+    assert np.array_equal(episode.segment(1, 3)["reward"], [1.0, 2.0])
+
+    writer.end(terminated=True)
+    assert not episode.ongoing and episode.terminated
+    with pytest.raises(ValueError):
+        writer.add_step({"rewards": 0.0})
+
+
+def _step(reward: float = 0.0) -> dict:
+    return {
+        "observations": {
+            "front_camera": np.zeros((3, 8, 8), dtype=np.uint8),
+            "wrist_camera": np.zeros((3, 8, 8), dtype=np.uint8),
+            "state": np.zeros(5, dtype=np.float32),
+        },
+        "actions": np.zeros(2, dtype=np.float32),
+        "rewards": reward,
+    }
+
+
+def _reset_obs() -> dict:
+    return {
+        "front_camera": np.full((3, 8, 8), 5, dtype=np.uint8),
+        "wrist_camera": np.zeros((3, 8, 8), dtype=np.uint8),
+        "state": np.ones(5, dtype=np.float32),
+    }
+
+
+def test_add_reset(dataset):
+    writer = dataset.new_episode()
+    writer.add_reset(_reset_obs())
+    row = dataset.episode(writer.episode_id).step(0)
+    assert np.array_equal(row["state"], np.ones(5, dtype=np.float32))
+    assert np.array_equal(row["action"], np.zeros(2, dtype=np.float32))
+    assert row["reward"] == 0.0
+    # the reset row must come first
+    with pytest.raises(ValueError, match="first step"):
+        writer.add_reset(_reset_obs())
+
+
+def test_gymnasium_style_step_signals(dataset):
+    writer = dataset.new_episode()
+    writer.add_reset(_reset_obs())
+    writer.add_step({**_step(1.0), "terminated": False, "truncated": False})
+    writer.add_step({**_step(2.0), "terminated": True, "truncated": False})
+
+    episode = dataset.episode(writer.episode_id)
+    assert not episode.ongoing and episode.terminated and not episode.truncated
+    assert len(episode) == 3
+    # the terminal signal closed the writer, Gymnasium-style
+    with pytest.raises(ValueError, match="closed"):
+        writer.add_step(_step())
+
+
+def test_truncated_step_signal(dataset):
+    writer = dataset.new_episode()
+    writer.add_reset(_reset_obs())
+    writer.add_step({**_step(), "truncated": True})
+    episode = dataset.episode(writer.episode_id)
+    assert episode.truncated and not episode.terminated and not episode.ongoing
+
+
+def test_segment_with_terminal_flag_finalizes(dataset):
+    writer = dataset.new_episode()
+    writer.add_steps(make_episode(3, seed=2, terminated=True))
+    assert dataset.episode(writer.episode_id).terminated
+
+
+def test_flags_validated_against_position_and_length():
+    with pytest.raises(ValueError, match="final step"):
+        Dataset.from_episodes(
+            [{**make_episode(5), "terminated": [False, True, False, False, False]}]
+        )
+    with pytest.raises(ValueError, match="length"):
+        Dataset.from_episodes([{**make_episode(5), "terminated": [False, True]}])
+
+
+def test_resume_episode(dataset):
+    episode_id = dataset.new_episode().episode_id
+    # later, without the original writer: reattach by id ...
+    writer = dataset.resume_episode(episode_id)
+    writer.add_step(_step(1.0))
+    # ... or via the episode view
+    dataset.episode(episode_id).writer().add_step(_step(2.0))
+    assert np.array_equal(dataset.episode(episode_id).read()["reward"], [1.0, 2.0])
+
+    writer.end(terminated=True)
+    with pytest.raises(ValueError, match="finalized"):
+        dataset.resume_episode(episode_id)
+
+
+def test_direct_id_based_append(dataset):
+    episode_id = dataset.new_episode().episode_id
+    dataset.add_step(episode_id, _step(1.0))
+    dataset.add_steps(
+        episode_id,
+        {
+            "observations": {
+                "front_camera": np.zeros((2, 3, 8, 8), dtype=np.uint8),
+                "wrist_camera": np.zeros((2, 3, 8, 8), dtype=np.uint8),
+                "state": np.zeros((2, 5), dtype=np.float32),
+            },
+            "actions": np.zeros((2, 2), dtype=np.float32),
+            "rewards": [2.0, 3.0],
+        },
+    )
+    episode = dataset.end_episode(episode_id, terminated=True)
+    assert episode.terminated and len(episode) == 3
+    assert np.array_equal(episode.read()["reward"], [1.0, 2.0, 3.0])
+
+    with pytest.raises(ValueError, match="finalized"):
+        dataset.add_step(episode_id, _step())
+    with pytest.raises(ValueError, match="finalized"):
+        dataset.end_episode(episode_id)
+
+
+def test_resume_after_reopen(tmp_path):
+    path = str(tmp_path / "ds")
+    dataset = Dataset.from_episodes([make_episode(4)], path=path)
+    episode_id = dataset.new_episode(
+        initial=make_episode(3, seed=7, terminated=False)
+    ).episode_id
+    dataset.flush()
+
+    reopened = Dataset.open(path)
+    writer = reopened.resume_episode(episode_id)
+    writer.add_step(_step(9.0))
+    episode = writer.end(terminated=True)
+    assert len(episode) == 4 and episode.terminated
+    assert episode.read()["reward"][-1] == 9.0
+
+
+def test_append_validation(dataset):
+    writer = dataset.new_episode()
+    with pytest.raises(ValueError, match="shape"):
+        writer.add_step(
+            {
+                "observations": {
+                    "front_camera": np.zeros((3, 4, 4), dtype=np.uint8),
+                    "wrist_camera": np.zeros((3, 8, 8), dtype=np.uint8),
+                    "state": np.zeros(5),
+                },
+                "actions": np.zeros(2),
+                "rewards": 0.0,
+            }
+        )
+    with pytest.raises(ValueError, match="missing required"):
+        writer.add_step({"rewards": 0.0})
+
+
+def test_ongoing_episode_survives_reopen(tmp_path):
+    path = str(tmp_path / "ds")
+    dataset = Dataset.from_episodes([make_episode(4)], path=path)
+    writer = dataset.new_episode(initial=make_episode(3, seed=7, terminated=False))
+    dataset.flush()
+
+    reopened = Dataset.open(path)
+    episode = reopened.episode(writer.episode_id)
+    assert episode.ongoing and len(episode) == 3
+    source = make_episode(3, seed=7)
+    assert np.array_equal(episode.read()["state"], source["observations"]["state"])
+
+
+def test_declared_schema_mode(backend_name, dataset_path):
+    schema = DatasetSchema.infer(make_episode(3))
+    schema.rename_space("vector", "proprio")
+    dataset = Dataset.from_episodes(
+        [make_episode(5)], schema=schema, path=dataset_path, backend=backend_name
+    )
+    assert dataset.episode(0).segment(0, 2).proprio.state.shape == (2, 5)
