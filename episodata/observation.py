@@ -191,9 +191,9 @@ class Observation(Mapping):
 
 
 class Batch(Observation):
-    """A batched window of fields with arrays shaped ``[B, L, ...]``.
+    """A batched segment of fields with arrays shaped ``[B, L, ...]``.
 
-    When the loader was configured with context/target windows, ``context``
+    When the loader was configured with context/target segments, ``context``
     and ``target`` expose the corresponding time slices.
     """
 
@@ -215,7 +215,7 @@ class Batch(Observation):
         self.terminated = terminated
         self.truncated = truncated
         #: Per-step validity [B, L]: True on real steps, False on the
-        #: zero-padding of a window drawn from a too-short episode.
+        #: zero-padding of a segment drawn from a too-short episode.
         self.mask = mask
 
     @property

@@ -147,7 +147,7 @@ Core operations include:
 - full episode access
 - transition sampling
 - fixed-length segment sampling
-- context and target windows
+- context and target segments
 - online episode append (create new episode (potentially with initial step or segment), add step / segment to existing episode, add complete episode)
 - query whether an episode has terminated or not 
 - recurrent burn-in

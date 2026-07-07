@@ -238,7 +238,7 @@ class Dataset:
     ) -> Loader:
         """Build a segment loader. See :class:`Loader`.
 
-        ``pad`` controls windows drawn from episodes shorter than the
+        ``pad`` controls segments drawn from episodes shorter than the
         requested length: zero-padded at the end (``"suffix"``, default) or
         at the start (``"prefix"``), with ``Batch.mask`` marking real
         steps; ``None`` skips short episodes.
@@ -288,7 +288,7 @@ class Dataset:
     ):
         """One-shot transition sampling; see :meth:`Loader.sample_transitions`.
 
-        Sampled without padding: a padded window would fabricate a
+        Sampled without padding: a padded segment would fabricate a
         transition into a zero-filled next observation.
         """
         loader = self.loader(

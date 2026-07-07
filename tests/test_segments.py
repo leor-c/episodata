@@ -6,7 +6,7 @@ from tests.conftest import make_episode
 
 def test_len_and_getitem_shapes(dataset):
     segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=4)
-    # episode lengths 10 and 7 -> (10-4+1) + (7-4+1) = 11 windows
+    # episode lengths 10 and 7 -> (10-4+1) + (7-4+1) = 11 segments
     assert len(segments) == 11
     segment = segments[0]
     assert segment.data["front_camera"].shape == (4, 3, 8, 8)
@@ -25,9 +25,9 @@ def test_getitem_out_of_range_raises(dataset):
 def test_matches_sequential_loader_scan(dataset):
     """SegmentDataset and Loader share SegmentIndex/read_segment, so a
     sequential (unshuffled) Loader scan and direct segment[i] access must
-    agree window-for-window."""
+    agree segment-for-segment."""
     loader = dataset.loader(fields=["reward"], sequence_length=4, batch_size=3, shuffle=False)
-    scanned = [w for batch in loader for w in batch["reward"]]
+    scanned = [s for batch in loader for s in batch["reward"]]
     segments = dataset.segments(fields=["reward"], sequence_length=4)
     assert len(segments) == len(scanned)
     for i, expected in enumerate(scanned):
@@ -36,8 +36,8 @@ def test_matches_sequential_loader_scan(dataset):
 
 def test_terminated_flag_only_on_final_step(dataset):
     segments = dataset.segments(fields=["reward"], sequence_length=4)
-    # episode 0 (length 10, terminated) contributes windows 0..6; only the
-    # window ending at step 9 carries a True, on its last position.
+    # episode 0 (length 10, terminated) contributes segments 0..6; only the
+    # segment ending at step 9 carries a True, on its last position.
     for i in range(6):
         assert segments[i].terminated.sum() == 0
     assert segments[6].terminated[3] and segments[6].terminated.sum() == 1
@@ -77,11 +77,11 @@ def test_filter(dataset):
     segments = dataset.segments(
         fields=["reward"], sequence_length=2, filter=lambda ep: len(ep) > 8
     )
-    # only episode 0 (length 10) passes the filter -> 9 windows
+    # only episode 0 (length 10) passes the filter -> 9 segments
     assert len(segments) == 9
 
 
-def test_empty_index_when_window_too_long_and_pad_disabled(dataset):
+def test_empty_index_when_segment_too_long_and_pad_disabled(dataset):
     segments = dataset.segments(sequence_length=100, pad=None)
     assert len(segments) == 0
     with pytest.raises(IndexError):
@@ -89,7 +89,7 @@ def test_empty_index_when_window_too_long_and_pad_disabled(dataset):
 
 
 def test_short_episode_yields_one_suffix_padded_segment(dataset):
-    # episode lengths 10 and 7 -> ep0 gives 3 full windows, ep1 one padded
+    # episode lengths 10 and 7 -> ep0 gives 3 full segments, ep1 one padded
     segments = dataset.segments(fields=["reward"], sequence_length=8)
     assert len(segments) == 4
     padded = segments[3]
@@ -97,7 +97,7 @@ def test_short_episode_yields_one_suffix_padded_segment(dataset):
     assert np.array_equal(padded.data["reward"][:7], source)
     assert np.array_equal(padded.data["reward"][7:], np.zeros(1, dtype=np.float32))
     assert np.array_equal(padded.mask, [True] * 7 + [False])
-    # full windows carry an all-True mask
+    # full segments carry an all-True mask
     assert segments[0].mask.all()
 
 
@@ -111,9 +111,9 @@ def test_short_episode_prefix_padding(dataset):
 
 
 def test_padded_segment_terminal_flag_position(dataset):
-    # window longer than both episodes -> each gives one padded segment;
+    # segment longer than both episodes -> each gives one padded segment;
     # episode 0 (length 10) is terminated, so the flag sits on its last
-    # real step: offset 9 with suffix padding, window-1 with prefix.
+    # real step: offset 9 with suffix padding, segment-1 with prefix.
     suffix = dataset.segments(fields=["reward"], sequence_length=12)
     assert len(suffix) == 2
     assert suffix[0].terminated[9] and suffix[0].terminated.sum() == 1

@@ -8,7 +8,7 @@ the storage backend, never the API.
 The design (see `world_model_dataset_design.md`) separates three layers:
 
 1. **Logical data model** — schema, spaces, fields, observations
-2. **Query and sampling API** — episodes, segments, windows, transitions
+2. **Query and sampling API** — episodes, segments, transitions
 3. **Storage implementation** — a replaceable `StorageBackend`
 
 ## Quick start
@@ -88,7 +88,7 @@ The persisted schema is authoritative — it is never re-inferred on reopen.
 ### Sampling
 
 ```python
-# Fixed-length segments / context+target windows for world-model training
+# Fixed-length segments / context+target segments for world-model training
 loader = dataset.loader(
     fields=["front_camera", "state", "action"],
     context_length=4,
@@ -114,7 +114,7 @@ dataset.loader(sequence_length=8, filter=lambda ep: ep.terminated)
 ### Map-style access (`torch.utils.data.DataLoader`)
 
 `loader()` is an infinite, shuffled, with-replacement stream. `segments()`
-gives the same fixed-length windows as an indexable, map-style dataset
+gives the same fixed-length segments as an indexable, map-style dataset
 instead — its `__len__`/`__getitem__` satisfy `DataLoader`'s map-style
 protocol by duck typing, so reads (including per-episode decompression on
 disk-backed backends) get sharded across `num_workers` worker processes:

@@ -69,7 +69,7 @@ if __name__ == "__main__":
     # Reopen: same logical API, schema not re-inferred.
     dataset = Dataset.open("example_dataset")
 
-    # Context/target windows for world-model training.
+    # Context/target segments for world-model training.
     loader = dataset.loader(
         fields=["front_camera", "state", "action"],
         context_length=4,
