@@ -81,11 +81,58 @@ def test_filter(dataset):
     assert len(segments) == 9
 
 
-def test_empty_index_when_window_too_long(dataset):
-    segments = dataset.segments(sequence_length=100)
+def test_empty_index_when_window_too_long_and_pad_disabled(dataset):
+    segments = dataset.segments(sequence_length=100, pad=None)
     assert len(segments) == 0
     with pytest.raises(IndexError):
         segments[0]
+
+
+def test_short_episode_yields_one_suffix_padded_segment(dataset):
+    # episode lengths 10 and 7 -> ep0 gives 3 full windows, ep1 one padded
+    segments = dataset.segments(fields=["reward"], sequence_length=8)
+    assert len(segments) == 4
+    padded = segments[3]
+    source = make_episode(7, seed=1, terminated=False)["rewards"]
+    assert np.array_equal(padded.data["reward"][:7], source)
+    assert np.array_equal(padded.data["reward"][7:], np.zeros(1, dtype=np.float32))
+    assert np.array_equal(padded.mask, [True] * 7 + [False])
+    # full windows carry an all-True mask
+    assert segments[0].mask.all()
+
+
+def test_short_episode_prefix_padding(dataset):
+    segments = dataset.segments(fields=["reward"], sequence_length=8, pad="prefix")
+    padded = segments[3]
+    source = make_episode(7, seed=1, terminated=False)["rewards"]
+    assert np.array_equal(padded.data["reward"][1:], source)
+    assert padded.data["reward"][0] == 0
+    assert np.array_equal(padded.mask, [False] + [True] * 7)
+
+
+def test_padded_segment_terminal_flag_position(dataset):
+    # window longer than both episodes -> each gives one padded segment;
+    # episode 0 (length 10) is terminated, so the flag sits on its last
+    # real step: offset 9 with suffix padding, window-1 with prefix.
+    suffix = dataset.segments(fields=["reward"], sequence_length=12)
+    assert len(suffix) == 2
+    assert suffix[0].terminated[9] and suffix[0].terminated.sum() == 1
+    assert suffix[1].terminated.sum() == 0  # episode 1 not terminated
+    prefix = dataset.segments(fields=["reward"], sequence_length=12, pad="prefix")
+    assert prefix[0].terminated[11] and prefix[0].terminated.sum() == 1
+
+
+def test_collate_carries_mask(dataset):
+    segments = dataset.segments(fields=["reward"], sequence_length=8)
+    batch = segments.collate([segments[0], segments[3]])
+    assert batch.mask.shape == (2, 8)
+    assert batch.mask[0].all()
+    assert np.array_equal(batch.mask[1], [True] * 7 + [False])
+
+
+def test_invalid_pad_value_raises(dataset):
+    with pytest.raises(ValueError, match="pad"):
+        dataset.segments(sequence_length=4, pad="middle")
 
 
 def test_torch_dataloader_integration(dataset):

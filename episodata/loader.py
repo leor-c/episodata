@@ -6,7 +6,11 @@ backend executes the reads. The v1 execution strategy is straightforward
 per-window reads; a backend-aware planner can replace it later without
 changing this API.
 
-Windows are sampled uniformly over all valid (episode, start) pairs. Both
+Windows are sampled uniformly over all valid (episode, start) pairs. An
+episode shorter than the window still contributes one window: it is
+zero-padded up to the window length (at the end by default, at the start
+with ``pad="prefix"``), and the per-step ``mask`` marks which steps are
+real. Both
 :class:`Loader` (an infinite, shuffled, with-replacement stream) and
 :class:`SegmentDataset` (a map-style, indexable view — suited to
 ``torch.utils.data.DataLoader`` and its ``num_workers`` parallelism) are
@@ -69,11 +73,39 @@ def _resolve_window(
     return window
 
 
+def _resolve_pad(pad: str | None) -> str | None:
+    if pad not in ("suffix", "prefix", None):
+        raise ValueError(f"pad must be 'suffix', 'prefix' or None, got {pad!r}")
+    return pad
+
+
+def _pad_axis0(arr: np.ndarray, pad: int, mode: str) -> np.ndarray:
+    """Zero-pad ``arr`` along axis 0, after ("suffix") or before ("prefix")."""
+    widths = [(pad, 0) if mode == "prefix" else (0, pad)] + [(0, 0)] * (arr.ndim - 1)
+    return np.pad(arr, widths)
+
+
 def read_segment(
     backend: StorageBackend, fields: Sequence[str], selection: Selection
 ) -> dict[str, np.ndarray]:
     """Read one segment's fields from the backend, normalized to a flat dict."""
     return normalize_payload(backend.read_fields(fields, selection))
+
+
+def pad_segment(
+    data: dict[str, np.ndarray], length: int, window: int, mode: str | None
+) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """Zero-pad a ``length``-step segment read up to ``window`` steps and
+    return it with the per-step validity mask (True on real steps)."""
+    mask = np.ones(window, dtype=bool)
+    pad = window - length
+    if pad:
+        data = {k: _pad_axis0(v, pad, mode) for k, v in data.items()}
+        if mode == "prefix":
+            mask[:pad] = False
+        else:
+            mask[length:] = False
+    return data, mask
 
 
 @dataclasses.dataclass(frozen=True)
@@ -86,12 +118,16 @@ class SegmentIndex:
     become visible immediately. :class:`SegmentDataset` builds one at
     construction, giving it the stable ``__len__`` a map-style dataset
     needs.
+
+    With ``pad`` set, a non-empty episode shorter than the window counts
+    as one window; ``pad=None`` skips such episodes instead.
     """
 
     episode_ids: np.ndarray
     lengths: np.ndarray
     cumulative_windows: np.ndarray
     window: int
+    pad: str | None
 
     @classmethod
     def build(
@@ -99,22 +135,24 @@ class SegmentIndex:
         dataset: "Dataset",
         window: int,
         filter: Callable[["Episode"], bool] | None = None,
+        pad: str | None = "suffix",
     ) -> "SegmentIndex":
         episode_ids, lengths = [], []
         for episode in dataset.episodes():
             if filter is not None and not filter(episode):
                 continue
             length = len(episode)
-            if length >= window:
+            if length >= window or (pad is not None and length > 0):
                 episode_ids.append(episode.id)
                 lengths.append(length)
         lengths_arr = np.asarray(lengths, dtype=np.int64)
-        windows = lengths_arr - window + 1
+        windows = np.maximum(lengths_arr - window + 1, 1)
         return cls(
             episode_ids=np.asarray(episode_ids, dtype=np.int64),
             lengths=lengths_arr,
             cumulative_windows=np.cumsum(windows),
             window=window,
+            pad=pad,
         )
 
     def __len__(self) -> int:
@@ -123,23 +161,33 @@ class SegmentIndex:
     def resolve(self, flat_idx: int) -> tuple[Selection, int | None]:
         """Map a flat window index to a Selection, plus the in-window offset
         of the episode's terminal step (``None`` if this window doesn't
-        reach the episode's end)."""
+        reach the episode's end).
+
+        For an episode shorter than the window, the Selection covers the
+        whole episode (fewer than ``window`` steps); the caller pads the
+        read up to the window length according to ``pad``."""
         if not 0 <= flat_idx < len(self):
             raise IndexError(flat_idx)
         slot = int(np.searchsorted(self.cumulative_windows, flat_idx, side="right"))
         episode_id = int(self.episode_ids[slot])
         previous = int(self.cumulative_windows[slot - 1]) if slot else 0
         start = int(flat_idx - previous)
-        selection = Selection(episode_id, start, start + self.window)
-        last = int(self.lengths[slot]) - 1
-        terminal_offset = last - start if start <= last < start + self.window else None
+        length = int(self.lengths[slot])
+        stop = min(start + self.window, length)
+        selection = Selection(episode_id, start, stop)
+        last = length - 1
+        pad_front = self.window - selection.length if self.pad == "prefix" else 0
+        terminal_offset = (
+            last - start + pad_front if start <= last < start + self.window else None
+        )
         return selection, terminal_offset
 
 
 @dataclasses.dataclass
 class Segment:
     """One unbatched segment: field arrays shaped ``[L, ...]``, with
-    per-step ``terminated``/``truncated`` flags.
+    per-step ``terminated``/``truncated`` flags and a per-step ``mask``
+    (True on real steps, False on padding).
 
     Returned by :class:`SegmentDataset`; combine a list of these into a
     :class:`Batch` via :meth:`SegmentDataset.collate`.
@@ -149,6 +197,7 @@ class Segment:
     schema: "DatasetSchema"
     terminated: np.ndarray
     truncated: np.ndarray
+    mask: np.ndarray
 
     @property
     def observation(self) -> Observation:
@@ -179,6 +228,12 @@ class SegmentDataset:
     ``DataLoader``'s map-style protocol by duck typing. It works equally
     well without torch installed at all (e.g. ``segments[i]`` directly, or
     your own multiprocessing).
+
+    An episode shorter than the window yields one segment, zero-padded up
+    to the window length: at the end with ``pad="suffix"`` (default), at
+    the start with ``pad="prefix"``. ``Segment.mask`` (and ``Batch.mask``
+    after collation) is True on real steps. ``pad=None`` skips short
+    episodes instead.
     """
 
     def __init__(
@@ -189,13 +244,15 @@ class SegmentDataset:
         context_length: int | None = None,
         target_length: int | None = None,
         filter: Callable[["Episode"], bool] | None = None,
+        pad: str | None = "suffix",
     ):
         self.dataset = dataset
         self.fields = dataset._resolve_fields(fields)
         self.context_length = context_length
         self.target_length = target_length
         self.window = _resolve_window(sequence_length, context_length, target_length)
-        self._index = SegmentIndex.build(dataset, self.window, filter)
+        self.pad = _resolve_pad(pad)
+        self._index = SegmentIndex.build(dataset, self.window, filter, pad=self.pad)
 
     def __len__(self) -> int:
         return len(self._index)
@@ -203,13 +260,14 @@ class SegmentDataset:
     def __getitem__(self, i: int) -> Segment:
         selection, terminal_offset = self._index.resolve(i)
         data = read_segment(self.dataset.backend, self.fields, selection)
+        data, mask = pad_segment(data, selection.length, self.window, self.pad)
         terminated = np.zeros(self.window, dtype=bool)
         truncated = np.zeros(self.window, dtype=bool)
         if terminal_offset is not None:
             backend = self.dataset.backend
             terminated[terminal_offset] = backend.episode_terminated(selection.episode_id)
             truncated[terminal_offset] = backend.episode_truncated(selection.episode_id)
-        return Segment(data, self.dataset.schema, terminated, truncated)
+        return Segment(data, self.dataset.schema, terminated, truncated, mask)
 
     def collate(self, items: list[Segment]) -> Batch:
         """Combine single segments into a :class:`Batch`. Pass this as
@@ -217,6 +275,7 @@ class SegmentDataset:
         data = {k: np.stack([item.data[k] for item in items], axis=0) for k in self.fields}
         terminated = np.stack([item.terminated for item in items], axis=0)
         truncated = np.stack([item.truncated for item in items], axis=0)
+        mask = np.stack([item.mask for item in items], axis=0)
         return Batch(
             data,
             self.dataset.schema,
@@ -224,6 +283,7 @@ class SegmentDataset:
             target_length=self.target_length,
             terminated=terminated,
             truncated=truncated,
+            mask=mask,
         )
 
 
@@ -239,6 +299,7 @@ class Loader:
         shuffle: bool = True,
         seed: int | None = None,
         filter: Callable[["Episode"], bool] | None = None,
+        pad: str | None = "suffix",
     ):
         self.window = _resolve_window(sequence_length, context_length, target_length)
         self.dataset = dataset
@@ -248,6 +309,7 @@ class Loader:
         self.target_length = target_length
         self.shuffle = shuffle
         self.filter = filter
+        self.pad = _resolve_pad(pad)
         self._rng = np.random.default_rng(seed)
 
     # -- index ---------------------------------------------------------------
@@ -255,7 +317,7 @@ class Loader:
     def _build_index(self) -> SegmentIndex:
         """Snapshot valid windows. Rebuilt per sample so that episodes
         appended online become visible; cheap relative to reads at v1 scale."""
-        return SegmentIndex.build(self.dataset, self.window, self.filter)
+        return SegmentIndex.build(self.dataset, self.window, self.filter, pad=self.pad)
 
     # -- sampling ---------------------------------------------------------------
 
@@ -263,9 +325,11 @@ class Loader:
         """Draw one batch of windows uniformly over all valid windows."""
         index = self._build_index()
         if len(index) == 0:
-            raise ValueError(
-                f"no episode has length >= {self.window} (after filtering)"
-            )
+            if self.pad is None:
+                raise ValueError(
+                    f"no episode has length >= {self.window} (after filtering)"
+                )
+            raise ValueError("no non-empty episodes to sample from (after filtering)")
         draws = self._rng.integers(len(index), size=self.batch_size)
         return self._read_batch(index, draws)
 
@@ -307,10 +371,12 @@ class Loader:
         columns: dict[str, list[np.ndarray]] = {k: [] for k in self.fields}
         terminated = np.zeros((len(draws), self.window), dtype=bool)
         truncated = np.zeros((len(draws), self.window), dtype=bool)
+        mask = np.ones((len(draws), self.window), dtype=bool)
 
         for row, draw in enumerate(draws):
             selection, terminal_offset = index.resolve(int(draw))
             payload = read_segment(backend, self.fields, selection)
+            payload, mask[row] = pad_segment(payload, selection.length, self.window, self.pad)
             for key in self.fields:
                 columns[key].append(payload[key])
             if terminal_offset is not None:
@@ -325,4 +391,5 @@ class Loader:
             target_length=self.target_length,
             terminated=terminated,
             truncated=truncated,
+            mask=mask,
         )

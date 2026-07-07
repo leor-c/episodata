@@ -103,13 +103,64 @@ def test_filter(dataset):
     loader.sample()  # sampling under the filter works
 
 
-def test_window_too_long_raises(dataset):
+def test_window_too_long_raises_with_pad_disabled(dataset):
     with pytest.raises(ValueError, match="no episode"):
-        dataset.loader(sequence_length=100).sample()
+        dataset.loader(sequence_length=100, pad=None).sample()
+
+
+def test_short_episodes_sampled_with_padding(dataset):
+    # window longer than both episodes (10 and 7): each becomes one
+    # zero-padded window, so every drawn mask sums to an episode length
+    loader = dataset.loader(fields=["reward"], sequence_length=12, batch_size=16, seed=0)
+    batch = loader.sample()
+    assert batch["reward"].shape == (16, 12)
+    assert batch.mask.shape == (16, 12)
+    assert set(batch.mask.sum(axis=1)) <= {7, 10}
+    # suffix padding: zeros after the real steps
+    for row in range(16):
+        length = batch.mask[row].sum()
+        assert batch.mask[row, :length].all()
+        assert np.all(batch["reward"][row, length:] == 0)
+
+
+def test_prefix_padding_in_loader(dataset):
+    loader = dataset.loader(
+        fields=["reward"], sequence_length=12, batch_size=8, seed=0, pad="prefix"
+    )
+    batch = loader.sample()
+    for row in range(8):
+        length = batch.mask[row].sum()
+        assert batch.mask[row, 12 - length:].all()
+        assert np.all(batch["reward"][row, : 12 - length] == 0)
+
+
+def test_full_windows_have_all_true_mask(dataset):
+    batch = dataset.loader(fields=["reward"], sequence_length=4, batch_size=5, seed=0).sample()
+    assert batch.mask.all()
+
+
+def test_transition_sampling_skips_short_episodes():
+    # a length-1 episode must not fabricate a transition into padding
+    t = np.arange(4, dtype=np.float32)
+    long_episode = {
+        "observations": {"x": t[:, None]},
+        "actions": (10 * t)[:, None],
+        "rewards": 100 * t,
+        "terminated": True,
+    }
+    short_episode = {
+        "observations": {"x": np.zeros((1, 1), np.float32) + 50},
+        "actions": np.zeros((1, 1), np.float32),
+        "rewards": np.zeros(1, np.float32),
+        "terminated": True,
+    }
+    dataset = Dataset.from_episodes([long_episode, short_episode])
+    batch = dataset.sample_transitions(batch_size=64, seed=0)
+    assert not np.any(batch.observations["x"] == 50)
 
 
 def test_online_episodes_become_sampleable(dataset):
-    loader = dataset.loader(fields=["reward"], sequence_length=15, batch_size=2, seed=0)
+    loader = dataset.loader(fields=["reward"], sequence_length=15, batch_size=2, seed=0, pad=None)
     with pytest.raises(ValueError):
         loader.sample()
     dataset.add_episode(make_episode(20, seed=3))
