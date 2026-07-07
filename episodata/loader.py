@@ -1,16 +1,16 @@
 """Query and sampling API.
 
 A :class:`Loader` is a declarative description of what the user wants —
-fields, window shape, batch size, filtering — decoupled from how the
+fields, segment shape, batch size, filtering — decoupled from how the
 backend executes the reads. The v1 execution strategy is straightforward
-per-window reads; a backend-aware planner can replace it later without
+per-segment reads; a backend-aware planner can replace it later without
 changing this API.
 
-Windows are sampled uniformly over all valid (episode, start) pairs. Both
+Segments are sampled uniformly over all valid (episode, start) pairs. Both
 :class:`Loader` (an infinite, shuffled, with-replacement stream) and
 :class:`SegmentDataset` (a map-style, indexable view — suited to
 ``torch.utils.data.DataLoader`` and its ``num_workers`` parallelism) are
-built on the same window index (:class:`SegmentIndex`) and the same
+built on the same segment index (:class:`SegmentIndex`) and the same
 single-segment read (:func:`read_segment`), so the two sampling modes
 share one source of truth instead of drifting apart.
 """
