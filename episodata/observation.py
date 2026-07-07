@@ -205,6 +205,7 @@ class Batch(Observation):
         target_length: int | None = None,
         terminated: np.ndarray | None = None,
         truncated: np.ndarray | None = None,
+        mask: np.ndarray | None = None,
     ):
         super().__init__(data, schema)
         self._context_length = context_length
@@ -213,6 +214,9 @@ class Batch(Observation):
         #: terminated (resp. truncated) episode.
         self.terminated = terminated
         self.truncated = truncated
+        #: Per-step validity [B, L]: True on real steps, False on the
+        #: zero-padding of a window drawn from a too-short episode.
+        self.mask = mask
 
     @property
     def context(self) -> "Batch":
@@ -233,4 +237,5 @@ class Batch(Observation):
             self._schema,
             terminated=None if self.terminated is None else self.terminated[:, start:stop],
             truncated=None if self.truncated is None else self.truncated[:, start:stop],
+            mask=None if self.mask is None else self.mask[:, start:stop],
         )
