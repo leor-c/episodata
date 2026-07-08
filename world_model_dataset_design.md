@@ -389,7 +389,7 @@ The implementation layers modules so that each depends only on the ones above it
 | `fields.py` | generic field views | `Fields` (flat named arrays + space/group/role access), `SpaceView`, `FieldGroup` |
 | `segment.py` | temporal containers | `Segment` (fields + per-step flags), `Batch` (leading batch dim, context/target slicing) |
 | `episode.py` | trajectory views | `Episode` (lazy read view), `EpisodeWriter` (online append handle) |
-| `loader.py` | query & sampling | `Loader` (stream), `SegmentDataset` (map-style), `TransitionBatch`, `SegmentIndex` |
+| `sampling.py` | query & sampling | `Loader` (stream), `SegmentDataset` (map-style), `TransitionBatch`, `SegmentIndex` |
 | `dataset.py` | entry point | `Dataset` — ties schema, backend, episodes and queries together |
 | `backends/` | storage | `StorageBackend` contract; `memory`, `npz_directory` |
 | `normalize.py` | write boundary | canonical episode/step dicts, `/`-path flattening, alignment shifts |

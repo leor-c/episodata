@@ -14,7 +14,7 @@ import numpy as np
 
 from .backends.base import StorageBackend, get_backend
 from .episode import Episode, EpisodeWriter
-from .loader import Loader, SegmentDataset
+from .sampling import Loader, SegmentDataset
 from .normalize import SEP, normalize_episode, normalize_step, shift_action_out
 from .schema import DatasetSchema
 
