@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 
@@ -52,6 +54,24 @@ def test_action_space_naming():
     }
     schema = DatasetSchema.infer(same_format)
     assert schema.field("state").space != schema.field("action").space
+
+
+def test_shadowed_field_warns():
+    # a field named after its space is ambiguous once siblings exist:
+    # attribute access yields the view, item access the field
+    episode = {
+        "observations": {"o": np.zeros((4, 3), dtype=np.float32)},
+        "actions": {
+            "action": np.zeros((4, 2), dtype=np.float32),
+            "action2": np.zeros((4, 2), dtype=np.float32),
+        },
+    }
+    with pytest.warns(UserWarning, match="shadowed by space"):
+        DatasetSchema.infer(episode)
+    # the trivial collision (lone same-named field) is fine: it unwraps
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        DatasetSchema.infer(make_episode(5))
 
 
 def test_json_roundtrip():

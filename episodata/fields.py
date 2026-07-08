@@ -139,7 +139,15 @@ class Fields(Mapping):
         fields.rewards                  # reward-role fields
 
     Name resolution order for attributes and keys: role view, space, group,
-    field.
+    field. One refinement: a *trivial* space — one whose only present field
+    carries the space's own name, as inference produces for a bare action or
+    reward array — resolves straight to that field's array rather than a
+    one-entry :class:`SpaceView`::
+
+        fields.action                   # the [T, ...] array, not a view
+        fields.space_view("action")     # the SpaceView, if you insist
+
+    :meth:`space_view` always returns the view, whatever the field count.
     """
 
     def __init__(self, data: Mapping[str, np.ndarray], schema: "DatasetSchema"):
@@ -177,13 +185,26 @@ class Fields(Mapping):
         head = f"{name}{SEP}"
         return any(k.startswith(head) for k in self._data)
 
-    def _space_view(self, space_key: str) -> SpaceView:
+    def space_view(self, space_key: str) -> SpaceView:
+        """The :class:`SpaceView` of a space, regardless of field count.
+
+        Unlike attribute/key access — which unwraps a trivial space (one
+        whose only present field carries the space's own name) straight to
+        its array — this always returns the view, so structural code keeps a
+        stable type as the schema evolves.
+        """
         members = {
             k: self._data[k]
             for k in self._schema.fields_in_space(space_key)
             if k in self._data
         }
         return SpaceView(self._schema.space(space_key), members)
+
+    def _space_view(self, space_key: str):
+        view = self.space_view(space_key)
+        if list(view) == [space_key]:
+            return view[space_key]
+        return view
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._data)

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from episodata import Segment
+from episodata import Dataset, Segment, SpaceView
 
 
 def test_access_patterns(dataset):
@@ -16,6 +16,55 @@ def test_access_patterns(dataset):
     assert set(keys) == {"front_camera", "wrist_camera"}
     # stacking valid within a space
     assert obs.image.stacked().shape == (2, 4, 3, 8, 8)
+
+
+def test_trivial_space_unwraps_to_array(dataset):
+    seg = dataset.episode(0).segment(0, 4)
+    # the action/reward spaces hold a single same-named field, so attribute
+    # access resolves straight to the array
+    assert isinstance(seg.action, np.ndarray)
+    assert seg.action.shape == (4, 2)
+    assert np.array_equal(seg.action, seg["action"])
+    assert isinstance(seg.reward, np.ndarray)
+    assert seg.reward.shape == (4,)
+    # a structural space keeps its view even with differently-named fields
+    assert isinstance(seg.image, SpaceView)
+    # the view of a trivial space stays reachable explicitly
+    view = seg.space_view("action")
+    assert isinstance(view, SpaceView)
+    assert set(view) == {"action"}
+
+
+def test_lone_same_named_field_unwraps():
+    episode = {
+        "observations": {"image": np.zeros((4, 3, 8, 8), dtype=np.uint8)},
+        "actions": np.zeros((4, 2), dtype=np.float32),
+        "rewards": np.zeros(4, dtype=np.float32),
+    }
+    seg = Dataset.from_episodes([episode]).episode(0).read()
+    assert isinstance(seg.image, np.ndarray)
+    assert seg.image.shape == (4, 3, 8, 8)
+
+
+def test_shadowed_space_stays_navigable():
+    episode = {
+        "observations": {"o": np.zeros((4, 3), dtype=np.float32)},
+        "actions": {
+            "action": np.zeros((4, 2), dtype=np.float32),
+            "action2": np.ones((4, 2), dtype=np.float32),
+        },
+    }
+    with pytest.warns(UserWarning, match="shadowed by space"):
+        ds = Dataset.from_episodes([episode])
+    seg = ds.episode(0).read()
+    # with siblings the space wins attribute lookup and stays navigable
+    assert isinstance(seg.action, SpaceView)
+    assert seg.action.action2.shape == (4, 2)
+    assert seg.action.action.shape == (4, 2)
+    assert set(seg.space_view("action")) == {"action", "action2"}
+    # flat item access still reads the shadowed field itself
+    assert isinstance(seg["action"], np.ndarray)
+    assert np.array_equal(seg["action"], seg.action.action)
 
 
 def test_unknown_access_raises(dataset):

@@ -49,6 +49,7 @@ seg.image.front_camera      # space access
 seg.image.stacked()         # same-space fields stack safely
 for key, value in seg.image.items(): ...
 
+seg.action, seg.reward      # bare action/reward arrays resolve directly
 seg.observations            # role views: observation-role fields only
 seg.actions, seg.rewards    # ... action / reward roles
 seg.terminated              # [L] flag, True only on a terminal final step
@@ -78,7 +79,11 @@ transitions.actions.keyboard.w               # groups work everywhere
 ```
 
 Name resolution order for attributes and keys: role view, space, group,
-field.
+field. A *trivial* space — one whose only field carries the space's own
+name, as inference produces for a bare action or reward array — resolves
+straight to that field's array (`seg.action`, `seg.reward`), not to a
+one-entry view; `seg.space_view("action")` returns the view regardless of
+field count.
 
 ### Schema: automatic, declared, or hybrid
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import warnings
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -118,6 +119,17 @@ class DatasetSchema:
                     f"field {field.key!r} references unknown space {field.space!r}"
                 )
             self.fields[field.key] = field
+        for key in self.fields:
+            # A field named after a space is fine when it is that space's
+            # only field (attribute access unwraps the trivial space to the
+            # array). With siblings present the space wins attribute lookup
+            # and shadows the field, so flag the ambiguity.
+            if key in self.spaces and self.fields_in_space(key) != [key]:
+                warnings.warn(
+                    f"field {key!r} is shadowed by space {key!r} for attribute "
+                    f"access; use fields[{key!r}] to read the field",
+                    stacklevel=2,
+                )
 
     # -- lookup ----------------------------------------------------------
 
