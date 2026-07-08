@@ -268,7 +268,9 @@ class Dataset:
         """Build a map-style, indexable view over segments. See
         :class:`SegmentDataset` — suited to ``torch.utils.data.DataLoader``
         and its ``num_workers`` parallelism, unlike :meth:`loader`.
-        ``pad`` behaves as in :meth:`loader`."""
+        ``pad`` behaves as in :meth:`loader`. On a growing dataset, call
+        :meth:`SegmentDataset.refresh` between epochs to make newly
+        appended episodes visible."""
         return SegmentDataset(
             self,
             fields=fields,

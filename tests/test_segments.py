@@ -143,6 +143,39 @@ def test_invalid_pad_value_raises(dataset):
         dataset.segments(sequence_length=4, pad="middle")
 
 
+def test_refresh_reveals_appended_episodes(dataset):
+    segments = dataset.segments(fields=["reward"], sequence_length=4)
+    assert len(segments) == 11
+    dataset.add_episode(make_episode(6, seed=2))
+    # the snapshot is stable until an explicit refresh
+    assert len(segments) == 11
+    segments.refresh()
+    assert len(segments) == 11 + 3
+    source = make_episode(6, seed=2)["rewards"]
+    assert np.array_equal(segments[11]["reward"], source[0:4])
+
+
+def test_refresh_is_noop_without_writes(dataset):
+    segments = dataset.segments(fields=["reward"], sequence_length=4)
+    index = segments._index
+    segments.refresh()
+    assert segments._index is index  # not rebuilt: backend saw no writes
+    dataset.add_episode(make_episode(6, seed=2))
+    segments.refresh()
+    assert segments._index is not index
+
+
+def test_refresh_respects_filter(dataset):
+    segments = dataset.segments(
+        fields=["reward"], sequence_length=2, filter=lambda ep: len(ep) > 8
+    )
+    assert len(segments) == 9
+    dataset.add_episode(make_episode(4, seed=2))  # too short for the filter
+    dataset.add_episode(make_episode(10, seed=3))
+    segments.refresh()
+    assert len(segments) == 9 + 9
+
+
 def test_torch_dataloader_integration(dataset):
     torch = pytest.importorskip("torch")
     from torch.utils.data import DataLoader

@@ -79,6 +79,7 @@ class MemoryBackend(StorageBackend):
 
     def create_episode(self) -> int:
         self._episodes.append(_Episode(chunks={k: [] for k in self._schema.fields}))
+        self._touch()
         return len(self._episodes) - 1
 
     def append_steps(self, episode_id: int, fields: Mapping[str, np.ndarray]) -> None:
@@ -89,6 +90,7 @@ class MemoryBackend(StorageBackend):
         for key, arr in fields.items():
             episode.chunks.setdefault(key, []).append(np.asarray(arr))
         episode.length += n
+        self._touch()
 
     def finalize_episode(self, episode_id: int, terminated: bool, truncated: bool) -> None:
         episode = self._episodes[episode_id]
@@ -96,6 +98,7 @@ class MemoryBackend(StorageBackend):
         episode.terminated = terminated
         episode.truncated = truncated
         self._consolidate(episode)
+        self._touch()
 
     @staticmethod
     def _consolidate(episode: _Episode) -> None:

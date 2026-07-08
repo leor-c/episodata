@@ -11,12 +11,12 @@ Segments are sampled uniformly over all valid (episode, start) pairs. An
 episode shorter than the segment still contributes one segment: it is
 zero-padded up to the segment length (at the end by default, at the start
 with ``pad="prefix"``), and the per-step ``mask`` marks which steps are
-real. Both :class:`Loader` (an infinite, shuffled, with-replacement stream) and
-:class:`SegmentDataset` (a map-style, indexable view — suited to
-``torch.utils.data.DataLoader`` and its ``num_workers`` parallelism) are
-built on the same segment index (:class:`SegmentIndex`) and the same
-single-segment read (:func:`read_segment`), so the two sampling modes
-share one source of truth instead of drifting apart.
+real. :class:`SegmentDataset` (a map-style, indexable view — suited to
+``torch.utils.data.DataLoader`` and its ``num_workers`` parallelism) is
+where segments are read, padded and collated; :class:`Loader` (an
+infinite, shuffled, with-replacement stream) is a thin sampling policy on
+top of it, drawing random indices and collating ``segments[i]`` items into
+batches — one source of truth for segment semantics.
 """
 
 from __future__ import annotations
@@ -114,10 +114,9 @@ class SegmentIndex:
     cumulative segment count used to map a flat draw to a segment
     :class:`Selection`.
 
-    :class:`Loader` rebuilds one per sample, so online-appended episodes
-    become visible immediately. :class:`SegmentDataset` builds one at
-    construction, giving it the stable ``__len__`` a map-style dataset
-    needs.
+    :class:`SegmentDataset` builds one at construction, giving it the
+    stable ``__len__`` a map-style dataset needs, and re-snapshots on
+    :meth:`SegmentDataset.refresh` when the backend has seen writes.
 
     With ``pad`` set, a non-empty episode shorter than the segment counts
     as one segment; ``pad=None`` skips such episodes instead.
@@ -186,12 +185,14 @@ class SegmentIndex:
 class SegmentDataset:
     """Map-style, indexable view over fixed-length segments of a dataset.
 
-    Unlike :class:`Loader`, the segment index is a snapshot taken at
-    construction — no built-in shuffling, no rebuild on online-appended
-    episodes. That's what a map-style dataset needs: a stable ``__len__``
-    and an order-independent ``__getitem__``, which is exactly the
-    protocol ``torch.utils.data.DataLoader`` uses to shard reads across
-    ``num_workers`` worker processes::
+    The segment index is a snapshot taken at construction — no built-in
+    shuffling, no implicit rebuild on online-appended episodes. That's
+    what a map-style dataset needs: a stable ``__len__`` and an
+    order-independent ``__getitem__``, which is exactly the protocol
+    ``torch.utils.data.DataLoader`` uses to shard reads across
+    ``num_workers`` worker processes. On a growing dataset, call
+    :meth:`refresh` between epochs (never mid-iteration) to make newly
+    appended episodes visible::
 
         from torch.utils.data import DataLoader
 
@@ -231,7 +232,24 @@ class SegmentDataset:
         self.target_length = target_length
         self.segment_length = _resolve_segment_length(sequence_length, context_length, target_length)
         self.pad = _resolve_pad(pad)
+        self.filter = filter
+        self._revision = dataset.backend.revision
         self._index = SegmentIndex.build(dataset, self.segment_length, filter, pad=self.pad)
+
+    def refresh(self) -> None:
+        """Re-snapshot the segment index so episodes appended since
+        construction (or the last refresh) become visible.
+
+        Cheap when nothing changed: the index is only rebuilt if the
+        backend has seen writes. Never call mid-iteration — ``__len__``
+        must stay stable while a ``DataLoader`` epoch is in flight.
+        """
+        revision = self.dataset.backend.revision
+        if revision != self._revision:
+            self._index = SegmentIndex.build(
+                self.dataset, self.segment_length, self.filter, pad=self.pad
+            )
+            self._revision = revision
 
     def __len__(self) -> int:
         return len(self._index)
@@ -269,6 +287,14 @@ class SegmentDataset:
 
 
 class Loader:
+    """Infinite, shuffled, with-replacement segment stream.
+
+    A thin sampling policy over :class:`SegmentDataset` (exposed as
+    ``self.segments``): each :meth:`sample` refreshes the view — a no-op
+    unless the dataset grew — draws ``batch_size`` uniform segment
+    indices, and collates the indexed segments into a :class:`Batch`.
+    """
+
     def __init__(
         self,
         dataset: "Dataset",
@@ -282,37 +308,45 @@ class Loader:
         filter: Callable[["Episode"], bool] | None = None,
         pad: str | None = "suffix",
     ):
-        self.segment_length = _resolve_segment_length(sequence_length, context_length, target_length)
-        self.dataset = dataset
-        self.fields = dataset._resolve_fields(fields)
+        self.segments = SegmentDataset(
+            dataset,
+            fields=fields,
+            sequence_length=sequence_length,
+            context_length=context_length,
+            target_length=target_length,
+            filter=filter,
+            pad=pad,
+        )
         self.batch_size = batch_size
-        self.context_length = context_length
-        self.target_length = target_length
         self.shuffle = shuffle
-        self.filter = filter
-        self.pad = _resolve_pad(pad)
         self._rng = np.random.default_rng(seed)
 
-    # -- index ---------------------------------------------------------------
+    @property
+    def dataset(self) -> "Dataset":
+        return self.segments.dataset
 
-    def _build_index(self) -> SegmentIndex:
-        """Snapshot valid segments. Rebuilt per sample so that episodes
-        appended online become visible; cheap relative to reads at v1 scale."""
-        return SegmentIndex.build(self.dataset, self.segment_length, self.filter, pad=self.pad)
+    @property
+    def fields(self) -> list[str]:
+        return self.segments.fields
+
+    @property
+    def segment_length(self) -> int:
+        return self.segments.segment_length
 
     # -- sampling ---------------------------------------------------------------
 
     def sample(self) -> Batch:
         """Draw one batch of segments uniformly over all valid segments."""
-        index = self._build_index()
-        if len(index) == 0:
-            if self.pad is None:
+        segments = self.segments
+        segments.refresh()
+        if len(segments) == 0:
+            if segments.pad is None:
                 raise ValueError(
-                    f"no episode has length >= {self.segment_length} (after filtering)"
+                    f"no episode has length >= {segments.segment_length} (after filtering)"
                 )
             raise ValueError("no non-empty episodes to sample from (after filtering)")
-        draws = self._rng.integers(len(index), size=self.batch_size)
-        return self._read_batch(index, draws)
+        draws = self._rng.integers(len(segments), size=self.batch_size)
+        return segments.collate([segments[int(i)] for i in draws])
 
     def sample_transitions(self) -> TransitionBatch:
         """Draw a batch of single-step transitions ``(s, a, r, s', done)``."""
@@ -339,38 +373,8 @@ class Loader:
             while True:
                 yield self.sample()
         else:
-            index = self._build_index()
-            all_draws = np.arange(len(index))
-            for i in range(0, len(all_draws), self.batch_size):
-                yield self._read_batch(index, all_draws[i : i + self.batch_size])
-
-    # -- execution ---------------------------------------------------------------
-
-    def _read_batch(self, index: SegmentIndex, draws: np.ndarray) -> Batch:
-        backend = self.dataset.backend
-        schema = self.dataset.schema
-        columns: dict[str, list[np.ndarray]] = {k: [] for k in self.fields}
-        terminated = np.zeros((len(draws), self.segment_length), dtype=bool)
-        truncated = np.zeros((len(draws), self.segment_length), dtype=bool)
-        mask = np.ones((len(draws), self.segment_length), dtype=bool)
-
-        for row, draw in enumerate(draws):
-            selection, terminal_offset = index.resolve(int(draw))
-            payload = read_segment(backend, self.fields, selection)
-            payload, mask[row] = pad_segment(payload, selection.length, self.segment_length, self.pad)
-            for key in self.fields:
-                columns[key].append(payload[key])
-            if terminal_offset is not None:
-                terminated[row, terminal_offset] = backend.episode_terminated(selection.episode_id)
-                truncated[row, terminal_offset] = backend.episode_truncated(selection.episode_id)
-
-        data = {k: np.stack(v, axis=0) for k, v in columns.items()}
-        return Batch(
-            data,
-            schema,
-            context_length=self.context_length,
-            target_length=self.target_length,
-            terminated=terminated,
-            truncated=truncated,
-            mask=mask,
-        )
+            segments = self.segments
+            segments.refresh()
+            for start in range(0, len(segments), self.batch_size):
+                stop = min(start + self.batch_size, len(segments))
+                yield segments.collate([segments[i] for i in range(start, stop)])

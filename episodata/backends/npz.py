@@ -161,6 +161,7 @@ class NpzDirectoryBackend(StorageBackend):
             _EpisodeRecord(file=os.path.join("episodes", f"ep_{episode_id:06d}.npz"), length=0)
         )
         self._buffers[episode_id] = {}
+        self._touch()
         return episode_id
 
     def append_steps(self, episode_id: int, fields: Mapping[str, np.ndarray]) -> None:
@@ -174,6 +175,7 @@ class NpzDirectoryBackend(StorageBackend):
         for key, arr in fields.items():
             buffer.setdefault(key, []).append(np.asarray(arr))
         record.length += next(iter(lengths.values()))
+        self._touch()
 
     def finalize_episode(self, episode_id: int, terminated: bool, truncated: bool) -> None:
         record = self._records[episode_id]
@@ -182,6 +184,7 @@ class NpzDirectoryBackend(StorageBackend):
         record.ongoing = False
         self._write_episode(episode_id)
         del self._buffers[episode_id]
+        self._touch()
         self.flush()
 
     def _write_episode(self, episode_id: int) -> None:

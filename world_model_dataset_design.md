@@ -480,18 +480,22 @@ class Batch(Segment):             # arrays [B, L, ...], flags [B, L]
     target: Batch                 # context_length / target_length
 ```
 
-**Loader / SegmentDataset** — the two sampling modes over one segment index:
+**Loader / SegmentDataset** — Loader is a thin sampling policy over
+SegmentDataset (its `segments` attribute), which owns all segment
+reading, padding and collation:
 
 ```python
-class Loader:                     # infinite shuffled stream / sequential scan
-    def sample(self) -> Batch
-    def sample_transitions(self) -> TransitionBatch
-    def __iter__(self) -> Iterator[Batch]
-
 class SegmentDataset:             # map-style; torch DataLoader-compatible
     def __len__(self) -> int
     def __getitem__(self, i: int) -> Segment
     def collate(self, items: list[Segment]) -> Batch   # pass as collate_fn
+    def refresh(self) -> None     # re-snapshot index; no-op unless data changed
+
+class Loader:                     # infinite shuffled stream / sequential scan
+    segments: SegmentDataset      # refreshed on every sample()
+    def sample(self) -> Batch
+    def sample_transitions(self) -> TransitionBatch
+    def __iter__(self) -> Iterator[Batch]
 
 @dataclass
 class TransitionBatch:            # alignment-free (s, a, r, s', done)

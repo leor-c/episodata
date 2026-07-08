@@ -76,6 +76,22 @@ class StorageBackend(abc.ABC):
     #: Stable backend identifier persisted in the manifest.
     name: ClassVar[str]
 
+    _revision: int = 0
+
+    @property
+    def revision(self) -> int:
+        """Monotonic counter of episode mutations (create/append/finalize).
+
+        Consumers snapshotting derived state (e.g. a segment index) compare
+        revisions to skip rebuilding when nothing changed.
+        """
+        return self._revision
+
+    def _touch(self) -> None:
+        """Record an episode mutation. Concrete backends call this from
+        ``create_episode``, ``append_steps`` and ``finalize_episode``."""
+        self._revision += 1
+
     # -- lifecycle ---------------------------------------------------------
 
     @classmethod
