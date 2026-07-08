@@ -24,13 +24,13 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-import tempfile
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
 
 from ..schema import DatasetSchema
+from ._buffers import EpisodeBuffers, atomic_write
 from .base import Payload, Selection, StorageBackend, register_backend
 
 _FORMAT_VERSION = 1
@@ -60,7 +60,7 @@ class NpzDirectoryBackend(StorageBackend):
         self._root = root
         self._schema = schema
         self._records = records
-        self._buffers: dict[int, dict[str, list[np.ndarray]]] = {}
+        self._buffers = EpisodeBuffers()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -93,11 +93,10 @@ class NpzDirectoryBackend(StorageBackend):
                 continue
             file_path = os.path.join(path, record.file)
             if os.path.exists(file_path):
-                with np.load(file_path) as archive:
-                    backend._buffers[episode_id] = {k: [archive[k]] for k in archive.files}
+                backend._buffers.restore(episode_id, file_path)
             else:
                 record.length = 0
-                backend._buffers[episode_id] = {}
+                backend._buffers.create(episode_id)
         return backend
 
     @property
@@ -131,7 +130,7 @@ class NpzDirectoryBackend(StorageBackend):
     def read_fields(self, field_ids: Sequence[str], selection: Selection) -> Payload:
         episode_id = selection.episode_id
         if episode_id in self._buffers:
-            return self._read_buffered(field_ids, selection)
+            return self._buffers.read(field_ids, selection)
         path = os.path.join(self._root, self._records[episode_id].file)
         out: dict[str, np.ndarray] = {}
         with np.load(path) as archive:
@@ -141,18 +140,6 @@ class NpzDirectoryBackend(StorageBackend):
                 out[key] = archive[key][selection.start : selection.stop]
         return out
 
-    def _read_buffered(self, field_ids: Sequence[str], selection: Selection) -> Payload:
-        buffer = self._buffers[selection.episode_id]
-        out: dict[str, np.ndarray] = {}
-        for key in field_ids:
-            chunks = buffer.get(key)
-            if not chunks:
-                raise KeyError(f"episode {selection.episode_id} has no field {key!r}")
-            if len(chunks) > 1:
-                buffer[key] = chunks = [np.concatenate(chunks, axis=0)]
-            out[key] = chunks[0][selection.start : selection.stop]
-        return out
-
     # -- writes ----------------------------------------------------------------
 
     def create_episode(self) -> int:
@@ -160,7 +147,7 @@ class NpzDirectoryBackend(StorageBackend):
         self._records.append(
             _EpisodeRecord(file=os.path.join("episodes", f"ep_{episode_id:06d}.npz"), length=0)
         )
-        self._buffers[episode_id] = {}
+        self._buffers.create(episode_id)
         self._touch()
         return episode_id
 
@@ -168,13 +155,7 @@ class NpzDirectoryBackend(StorageBackend):
         record = self._records[episode_id]
         if not record.ongoing:
             raise ValueError(f"episode {episode_id} is finalized")
-        lengths = {k: len(v) for k, v in fields.items()}
-        if len(set(lengths.values())) != 1:
-            raise ValueError(f"appended fields must share one length, got {lengths}")
-        buffer = self._buffers[episode_id]
-        for key, arr in fields.items():
-            buffer.setdefault(key, []).append(np.asarray(arr))
-        record.length += next(iter(lengths.values()))
+        record.length += self._buffers.append(episode_id, fields)
         self._touch()
 
     def finalize_episode(self, episode_id: int, terminated: bool, truncated: bool) -> None:
@@ -183,21 +164,19 @@ class NpzDirectoryBackend(StorageBackend):
         record.truncated = truncated
         record.ongoing = False
         self._write_episode(episode_id)
-        del self._buffers[episode_id]
+        self._buffers.drop(episode_id)
         self._touch()
         self.flush()
 
     def _write_episode(self, episode_id: int) -> None:
-        buffer = self._buffers[episode_id]
-        arrays = {k: np.concatenate(chunks, axis=0) for k, chunks in buffer.items()}
         path = os.path.join(self._root, self._records[episode_id].file)
-        _atomic_write(path, lambda f: np.savez_compressed(f, **arrays))
+        self._buffers.save(episode_id, path)
 
     # -- persistence -------------------------------------------------------------
 
     def flush(self) -> None:
         for episode_id in self._buffers:
-            if self._buffers[episode_id]:
+            if not self._buffers.is_empty(episode_id):
                 self._write_episode(episode_id)
         manifest = {
             "format_version": _FORMAT_VERSION,
@@ -206,16 +185,4 @@ class NpzDirectoryBackend(StorageBackend):
             "storage": {"episodes": [r.to_dict() for r in self._records]},
         }
         path = os.path.join(self._root, "manifest.json")
-        _atomic_write(path, lambda f: f.write(json.dumps(manifest, indent=2).encode()))
-
-
-def _atomic_write(path: str, write) -> None:
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            write(f)
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        raise
+        atomic_write(path, lambda f: f.write(json.dumps(manifest, indent=2).encode()))

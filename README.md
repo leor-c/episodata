@@ -194,6 +194,20 @@ Built-in:
 - `memory` — in-memory, for toy datasets, tests, replay-buffer usage
 - `npz_directory` — one compressed `.npz` per episode plus a `manifest.json`
   holding the logical schema and the storage manifest
+- `zarr` — one chunked store for the whole dataset (Zarr v3): each field is
+  a single array concatenated along time, plus O(1) per-episode index
+  writes. For datasets that outgrow one-file-per-episode (many thousands of
+  episodes, or short-segment sampling from long episodes — only the chunks
+  overlapping a read are decoded). Optional dependency:
+  `pip install "episodata[zarr]"` (needs Python ≥ 3.11)
+
+`Dataset.open(path)` reads the backend name from the manifest, so opening
+code never changes when a dataset changes backend. Migrate a dataset that
+outgrew its backend by streaming it across the storage boundary:
+
+```python
+big = Dataset.open("my_dataset").copy_to("my_dataset_zarr", backend="zarr")
+```
 
 A backend implements `StorageBackend` (`episodata/backends/base.py`): reads
 of logical field ids over temporal selections, online appends, and the

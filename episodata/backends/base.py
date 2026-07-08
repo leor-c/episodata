@@ -164,6 +164,7 @@ class StorageBackend(abc.ABC):
 
 
 _REGISTRY: dict[str, type[StorageBackend]] = {}
+_MISSING: dict[str, str] = {}
 
 
 def register_backend(cls: type[StorageBackend]) -> type[StorageBackend]:
@@ -171,10 +172,17 @@ def register_backend(cls: type[StorageBackend]) -> type[StorageBackend]:
     return cls
 
 
+def register_missing_backend(name: str, reason: str) -> None:
+    """Record why an optional backend is unavailable, for a clear error."""
+    _MISSING[name] = reason
+
+
 def get_backend(name: str) -> type[StorageBackend]:
     try:
         return _REGISTRY[name]
     except KeyError:
+        if name in _MISSING:
+            raise ImportError(f"backend {name!r} is unavailable: {_MISSING[name]}") from None
         raise KeyError(
             f"unknown backend {name!r}; registered: {list(_REGISTRY)}"
         ) from None

@@ -11,6 +11,7 @@ from .backends import (
     Selection,
     SpaceBlock,
     StorageBackend,
+    ZarrBackend,
     get_backend,
     register_backend,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "SpaceView",
     "StorageBackend",
     "TransitionBatch",
+    "ZarrBackend",
     "get_backend",
     "register_backend",
 ]

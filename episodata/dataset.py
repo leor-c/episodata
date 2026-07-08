@@ -7,12 +7,14 @@ or (with a future backend) in object storage.
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, Callable
 
 import numpy as np
 
-from .backends.base import StorageBackend, get_backend
+from .backends.base import Selection, StorageBackend, get_backend, normalize_payload
 from .episode import Episode, EpisodeWriter
 from .sampling import Loader, SegmentDataset
 from .normalize import SEP, normalize_episode, normalize_step, shift_action_out
@@ -72,8 +74,15 @@ class Dataset:
         return dataset
 
     @classmethod
-    def open(cls, path: str, backend: str = "npz_directory") -> "Dataset":
-        """Open an existing dataset; the persisted schema is authoritative."""
+    def open(cls, path: str, backend: str | None = None) -> "Dataset":
+        """Open an existing dataset; the persisted schema is authoritative.
+
+        The persisted manifest names the backend, so ``backend`` is only
+        needed for storage without a ``manifest.json``.
+        """
+        if backend is None:
+            with open(os.path.join(path, "manifest.json")) as f:
+                backend = json.load(f)["backend"]
         return cls(get_backend(backend).open(path))
 
     # -- core accessors ------------------------------------------------------
@@ -221,6 +230,42 @@ class Dataset:
 
     def close(self) -> None:
         self.backend.close()
+
+    def copy_to(
+        self,
+        path: str | None = None,
+        backend: str | None = None,
+        **backend_options: Any,
+    ) -> "Dataset":
+        """Copy this dataset into a new one on another backend or path.
+
+        Streams one episode at a time through the storage boundary — use it
+        to migrate a dataset that outgrew its backend (e.g. ``npz_directory``
+        to ``zarr``). Ongoing episodes are copied ongoing.
+        """
+        destination = Dataset.create(self.schema, path=path, backend=backend, **backend_options)
+        keys = self.schema.field_keys()
+        for episode_id in range(self.num_episodes):
+            destination_id = destination.backend.create_episode()
+            length = self.backend.episode_length(episode_id)
+            if length:
+                selection = Selection(episode_id, 0, length)
+                fields: dict[str, np.ndarray] = {}
+                for key in keys:
+                    try:
+                        payload = self.backend.read_fields([key], selection)
+                    except KeyError:  # field absent from this episode
+                        continue
+                    fields.update(normalize_payload(payload))
+                destination.backend.append_steps(destination_id, fields)
+            if not self.backend.episode_ongoing(episode_id):
+                destination.backend.finalize_episode(
+                    destination_id,
+                    terminated=self.backend.episode_terminated(episode_id),
+                    truncated=self.backend.episode_truncated(episode_id),
+                )
+        destination.flush()
+        return destination
 
     # -- queries -----------------------------------------------------------------
 

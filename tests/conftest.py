@@ -1,7 +1,13 @@
+import importlib.util
+
 import numpy as np
 import pytest
 
 from episodata import Dataset
+
+requires_zarr = pytest.mark.skipif(
+    importlib.util.find_spec("zarr") is None, reason="zarr not installed"
+)
 
 
 def make_episode(length: int, seed: int = 0, terminated: bool = True):
@@ -18,7 +24,7 @@ def make_episode(length: int, seed: int = 0, terminated: bool = True):
     }
 
 
-@pytest.fixture(params=["memory", "npz_directory"])
+@pytest.fixture(params=["memory", "npz_directory", pytest.param("zarr", marks=requires_zarr)])
 def backend_name(request):
     return request.param
 
