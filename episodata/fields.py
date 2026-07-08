@@ -148,6 +148,12 @@ class Fields(Mapping):
         fields.space_view("action")     # the SpaceView, if you insist
 
     :meth:`space_view` always returns the view, whatever the field count.
+
+    Singular vs plural: singular names resolve to data, while the plural
+    role views (``observations``, ``actions``, ``rewards``, ``infos``) are
+    collections by contract — always a :class:`Fields` sub-view, even when
+    the role holds a single field. ``fields.action`` is the action data;
+    ``fields.actions`` is the set of action-role fields.
     """
 
     def __init__(self, data: Mapping[str, np.ndarray], schema: "DatasetSchema"):
@@ -158,28 +164,34 @@ class Fields(Mapping):
     def schema(self) -> "DatasetSchema":
         return self._schema
 
-    def __getitem__(self, key: str) -> np.ndarray:
-        if key in self._data:
-            return self._data[key]
-        if key in self._schema.spaces:
-            return self._space_view(key)
-        if self._is_group(key):
-            return FieldGroup(key, self._data, self._schema)
-        raise KeyError(key)
-
-    def __getattr__(self, name: str):
-        if name.startswith("_"):
-            raise AttributeError(name)
+    def _resolve(self, name: str):
+        """Single source of truth for name resolution: space, group, field."""
         if name in self._schema.spaces:
             return self._space_view(name)
         if self._is_group(name):
             return FieldGroup(name, self._data, self._schema)
         if name in self._data:
             return self._data[name]
-        raise AttributeError(
-            f"no field, group or space named {name!r}; fields: {list(self._data)}, "
-            f"spaces: {list(self._schema.spaces)}"
-        )
+        raise KeyError(name)
+
+    def __getitem__(self, key: str) -> np.ndarray:
+        # The one deliberate divergence from _resolve: brackets are flat
+        # field access first, so seg["action"] reads the field even when a
+        # same-named space shadows it for attributes.
+        if key in self._data:
+            return self._data[key]
+        return self._resolve(key)
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            return self._resolve(name)
+        except KeyError:
+            raise AttributeError(
+                f"no field, group or space named {name!r}; fields: "
+                f"{list(self._data)}, spaces: {list(self._schema.spaces)}"
+            ) from None
 
     def _is_group(self, name: str) -> bool:
         head = f"{name}{SEP}"

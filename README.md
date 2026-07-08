@@ -51,7 +51,7 @@ for key, value in seg.image.items(): ...
 
 seg.action, seg.reward      # bare action/reward arrays resolve directly
 seg.observations            # role views: observation-role fields only
-seg.actions, seg.rewards    # ... action / reward roles
+seg.actions, seg.rewards    # ... action / reward roles, always collections
 seg.terminated              # [L] flag, True only on a terminal final step
 ```
 
@@ -84,6 +84,12 @@ name, as inference produces for a bare action or reward array — resolves
 straight to that field's array (`seg.action`, `seg.reward`), not to a
 one-entry view; `seg.space_view("action")` returns the view regardless of
 field count.
+
+Singular vs plural: singular names resolve to data, while the plural role
+views (`observations`, `actions`, `rewards`, `infos`) are collections by
+contract — always a `Fields` sub-view, even when the role holds a single
+field. `seg.action` is the action data; `seg.actions` is the set of
+action-role fields.
 
 ### Schema: automatic, declared, or hybrid
 
