@@ -10,8 +10,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
 from .backends.base import Selection, normalize_payload
-from .observation import Observation
+from .segment import Segment
 
 if TYPE_CHECKING:
     from .dataset import Dataset
@@ -54,10 +56,11 @@ class Episode:
         start: int = 0,
         stop: int | None = None,
         fields: list[str] | None = None,
-    ) -> Observation:
+    ) -> Segment:
         """Read steps ``[start, stop)`` of the selected fields.
 
-        Returns an :class:`Observation` with arrays shaped ``[L, ...]``.
+        Returns a :class:`Segment` with arrays shaped ``[L, ...]`` and
+        per-step ``terminated``/``truncated``/``mask`` flags.
         """
         length = len(self)
         if stop is None:
@@ -70,16 +73,33 @@ class Episode:
             raise IndexError(f"segment [{start}, {stop}) out of range for length {length}")
         fields = self._dataset._resolve_fields(fields)
         payload = self._backend.read_fields(fields, Selection(self.id, start, stop))
-        return Observation(normalize_payload(payload), self._dataset.schema)
+        terminated = np.zeros(stop - start, dtype=bool)
+        truncated = np.zeros(stop - start, dtype=bool)
+        if stop == length and stop > start:
+            terminated[-1] = self.terminated
+            truncated[-1] = self.truncated
+        return Segment(
+            normalize_payload(payload),
+            self._dataset.schema,
+            terminated=terminated,
+            truncated=truncated,
+            mask=np.ones(stop - start, dtype=bool),
+        )
 
-    def step(self, t: int, fields: list[str] | None = None) -> Observation:
-        """Read a single step; arrays have no leading time dim."""
+    def step(self, t: int, fields: list[str] | None = None) -> Segment:
+        """Read a single step; arrays and flags have no leading time dim."""
         if t < 0:
             t += len(self)
         segment = self.segment(t, t + 1, fields=fields)
-        return Observation({k: v[0] for k, v in segment.items()}, self._dataset.schema)
+        return Segment(
+            {k: v[0] for k, v in segment.items()},
+            self._dataset.schema,
+            terminated=segment.terminated[0],
+            truncated=segment.truncated[0],
+            mask=segment.mask[0],
+        )
 
-    def read(self, fields: list[str] | None = None) -> Observation:
+    def read(self, fields: list[str] | None = None) -> Segment:
         """Read the full episode."""
         return self.segment(0, None, fields=fields)
 

@@ -35,17 +35,23 @@ dataset = Dataset.from_episodes(episodes, path="my_dataset")
 dataset = Dataset.open("my_dataset")
 ```
 
-### Observations: flat storage, schema-driven structure
+### Fields: flat storage, schema-driven structure
 
-Fields are grouped into *spaces* (shared shape/dtype). The hierarchy comes
-from the schema, not from nesting in storage:
+Observations, actions and rewards are all *fields* — named arrays grouped
+into *spaces* (shared shape/dtype). The hierarchy comes from the schema,
+not from nesting in storage. Episode reads return a `Segment` holding every
+field plus per-step `terminated`/`truncated`/`mask` flags:
 
 ```python
-obs = dataset.episode(0).segment(0, 8)
-obs["front_camera"]         # flat access
-obs.image.front_camera      # space access
-obs.image.stacked()         # same-space fields stack safely
-for key, value in obs.image.items(): ...
+seg = dataset.episode(0).segment(0, 8)
+seg["front_camera"]         # flat access
+seg.image.front_camera      # space access
+seg.image.stacked()         # same-space fields stack safely
+for key, value in seg.image.items(): ...
+
+seg.observations            # role views: observation-role fields only
+seg.actions, seg.rewards    # ... action / reward roles
+seg.terminated              # [L] flag, True only on a terminal final step
 ```
 
 ### Hierarchical fields (complex actions and observations)
@@ -71,7 +77,8 @@ dataset.loader(fields=["pov", "keyboard"])   # a prefix selects the subtree
 transitions.actions.keyboard.w               # groups work everywhere
 ```
 
-Name resolution order for attributes and keys: space, group, field.
+Name resolution order for attributes and keys: role view, space, group,
+field.
 
 ### Schema: automatic, declared, or hybrid
 

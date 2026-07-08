@@ -28,12 +28,12 @@ from typing import TYPE_CHECKING, Callable
 import numpy as np
 
 from .backends.base import Selection, StorageBackend, normalize_payload
-from .observation import Batch, Observation
+from .fields import Fields
+from .segment import Batch, Segment
 
 if TYPE_CHECKING:
     from .dataset import Dataset
     from .episode import Episode
-    from .schema import DatasetSchema
 
 
 @dataclasses.dataclass
@@ -45,10 +45,10 @@ class TransitionBatch:
     ``t + 1``); the pairing is done here, so consumers are alignment-free.
     """
 
-    observations: Observation
-    actions: Observation
+    observations: Fields
+    actions: Fields
     rewards: np.ndarray | None
-    next_observations: Observation
+    next_observations: Fields
     terminated: np.ndarray
     truncated: np.ndarray
 
@@ -183,27 +183,6 @@ class SegmentIndex:
         return selection, terminal_offset
 
 
-@dataclasses.dataclass
-class Segment:
-    """One unbatched segment: field arrays shaped ``[L, ...]``, with
-    per-step ``terminated``/``truncated`` flags and a per-step ``mask``
-    (True on real steps, False on padding).
-
-    Returned by :class:`SegmentDataset`; combine a list of these into a
-    :class:`Batch` via :meth:`SegmentDataset.collate`.
-    """
-
-    data: dict[str, np.ndarray]
-    schema: "DatasetSchema"
-    terminated: np.ndarray
-    truncated: np.ndarray
-    mask: np.ndarray
-
-    @property
-    def observation(self) -> Observation:
-        return Observation(self.data, self.schema)
-
-
 class SegmentDataset:
     """Map-style, indexable view over fixed-length segments of a dataset.
 
@@ -267,12 +246,14 @@ class SegmentDataset:
             backend = self.dataset.backend
             terminated[terminal_offset] = backend.episode_terminated(selection.episode_id)
             truncated[terminal_offset] = backend.episode_truncated(selection.episode_id)
-        return Segment(data, self.dataset.schema, terminated, truncated, mask)
+        return Segment(
+            data, self.dataset.schema, terminated=terminated, truncated=truncated, mask=mask
+        )
 
     def collate(self, items: list[Segment]) -> Batch:
         """Combine single segments into a :class:`Batch`. Pass this as
         ``DataLoader``'s ``collate_fn``."""
-        data = {k: np.stack([item.data[k] for item in items], axis=0) for k in self.fields}
+        data = {k: np.stack([item[k] for item in items], axis=0) for k in self.fields}
         terminated = np.stack([item.terminated for item in items], axis=0)
         truncated = np.stack([item.truncated for item in items], axis=0)
         mask = np.stack([item.mask for item in items], axis=0)
@@ -343,10 +324,10 @@ class Loader:
         action_keys = [k for k in self.fields if schema.field(k).role == "action"]
         reward_keys = [k for k in self.fields if schema.field(k).role == "reward"]
         return TransitionBatch(
-            observations=Observation({k: batch[k][:, 0] for k in obs_keys}, schema),
-            actions=Observation({k: batch[k][:, 1] for k in action_keys}, schema),
+            observations=Fields({k: batch[k][:, 0] for k in obs_keys}, schema),
+            actions=Fields({k: batch[k][:, 1] for k in action_keys}, schema),
             rewards=batch[reward_keys[0]][:, 1] if reward_keys else None,
-            next_observations=Observation({k: batch[k][:, 1] for k in obs_keys}, schema),
+            next_observations=Fields({k: batch[k][:, 1] for k in obs_keys}, schema),
             terminated=batch.terminated[:, 1],
             truncated=batch.truncated[:, 1],
         )

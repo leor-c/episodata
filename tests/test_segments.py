@@ -9,9 +9,9 @@ def test_len_and_getitem_shapes(dataset):
     # episode lengths 10 and 7 -> (10-4+1) + (7-4+1) = 11 segments
     assert len(segments) == 11
     segment = segments[0]
-    assert segment.data["front_camera"].shape == (4, 3, 8, 8)
-    assert segment.observation.image.front_camera.shape == (4, 3, 8, 8)
-    assert segment.data["state"].shape == (4, 5)
+    assert segment["front_camera"].shape == (4, 3, 8, 8)
+    assert segment.image.front_camera.shape == (4, 3, 8, 8)
+    assert segment["state"].shape == (4, 5)
     assert segment.terminated.shape == (4,)
     assert segment.truncated.shape == (4,)
 
@@ -31,7 +31,7 @@ def test_matches_sequential_loader_scan(dataset):
     segments = dataset.segments(fields=["reward"], sequence_length=4)
     assert len(segments) == len(scanned)
     for i, expected in enumerate(scanned):
-        assert np.array_equal(segments[i].data["reward"], expected)
+        assert np.array_equal(segments[i]["reward"], expected)
 
 
 def test_terminated_flag_only_on_final_step(dataset):
@@ -57,7 +57,7 @@ def test_collate_matches_loader_batch_shape(dataset):
     assert batch.terminated[0, 3]  # item 6 carries the terminal flag
     assert batch.terminated[1:].sum() == 0
     for row, item in enumerate(items):
-        assert np.array_equal(batch["state"][row], item.data["state"])
+        assert np.array_equal(batch["state"][row], item["state"])
 
 
 def test_collate_context_target(dataset):
@@ -71,6 +71,14 @@ def test_collate_context_target(dataset):
         np.concatenate([batch.context["state"], batch.target["state"]], axis=1),
         batch["state"],
     )
+
+
+def test_batch_role_views(dataset):
+    segments = dataset.segments(sequence_length=4)
+    batch = segments.collate([segments[0], segments[1]])
+    assert set(batch.actions) == {"action"}
+    assert batch.actions["action"].shape == (2, 4, 2)
+    assert np.array_equal(batch.actions.mask, batch.mask)
 
 
 def test_filter(dataset):
@@ -94,8 +102,8 @@ def test_short_episode_yields_one_suffix_padded_segment(dataset):
     assert len(segments) == 4
     padded = segments[3]
     source = make_episode(7, seed=1, terminated=False)["rewards"]
-    assert np.array_equal(padded.data["reward"][:7], source)
-    assert np.array_equal(padded.data["reward"][7:], np.zeros(1, dtype=np.float32))
+    assert np.array_equal(padded["reward"][:7], source)
+    assert np.array_equal(padded["reward"][7:], np.zeros(1, dtype=np.float32))
     assert np.array_equal(padded.mask, [True] * 7 + [False])
     # full segments carry an all-True mask
     assert segments[0].mask.all()
@@ -105,8 +113,8 @@ def test_short_episode_prefix_padding(dataset):
     segments = dataset.segments(fields=["reward"], sequence_length=8, pad="prefix")
     padded = segments[3]
     source = make_episode(7, seed=1, terminated=False)["rewards"]
-    assert np.array_equal(padded.data["reward"][1:], source)
-    assert padded.data["reward"][0] == 0
+    assert np.array_equal(padded["reward"][1:], source)
+    assert padded["reward"][0] == 0
     assert np.array_equal(padded.mask, [False] + [True] * 7)
 
 
