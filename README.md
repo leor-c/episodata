@@ -11,6 +11,11 @@ The design (see `world_model_dataset_design.md`) separates three layers:
 2. **Query and sampling API** — episodes, segments, transitions
 3. **Storage implementation** — a replaceable `StorageBackend`
 
+New here? [`docs/getting_started.md`](docs/getting_started.md) covers the
+design and basic usage in a few minutes, and
+[`examples/getting_started.ipynb`](examples/getting_started.ipynb) is a
+runnable tour. This README is the full reference.
+
 ## Quick start
 
 ```python
