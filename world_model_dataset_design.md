@@ -31,33 +31,45 @@ dataset.episode(episode_id)
 An episode is a logical trajectory, not a physical file. It contains temporal fields such as observations, actions, rewards, termination, and truncation signals.
 Optionally, also info (as in Gym interface). 
 
-### Observation
+### Fields
 
-An observation is a schema-backed collection of named fields.
+Observations, actions, rewards and infos are structurally the same thing: schema-backed collections of named fields. One generic container (`Fields`) serves all of them; the *role* of a field (observation / action / reward / info) is schema metadata, not a separate container type.
 
 Fields are grouped into **spaces**:
 
 ```python
-obs.image.front
-obs.image.wrist
-obs.proprio.state
+fields.image.front
+fields.image.wrist
+fields.proprio.state
 ```
 
 Equivalent dictionary-style access should always be available:
 
 ```python
-obs["front"]
-obs.image["front"]
+fields["front"]
+fields.image["front"]
 ```
 
 Iteration over a space is supported:
 
 ```python
-for key, value in obs.image.items():
+for key, value in fields.image.items():
     ...
 ```
 
+Role-based sub-views select by schema role:
+
+```python
+fields.observations    # observation-role fields only
+fields.actions
+fields.rewards
+```
+
 The internal representation may remain flat. The hierarchy is reconstructed from the schema.
+
+### Segment
+
+Episode reads return a **segment**: all temporal fields of a contiguous run of steps — observations, actions, rewards, infos — plus per-step episode-boundary metadata (`terminated` / `truncated` flags and a padding `mask`) aligned with the leading dims. A batch is a segment with an extra leading batch dimension.
 
 
 
@@ -364,3 +376,166 @@ The design should preserve:
 \]
 
 The schema defines what the data means. The query API defines what the user wants. The backend decides how to execute it efficiently.
+
+---
+
+## Implemented API (v1)
+
+The implementation layers modules so that each depends only on the ones above it:
+
+| Module | Layer | Contents |
+|---|---|---|
+| `schema.py` | logical spec | `SpaceSpec`, `FieldSpec`, `DatasetSchema` — serializable, authoritative, no array data |
+| `fields.py` | generic field views | `Fields` (flat named arrays + space/group/role access), `SpaceView`, `FieldGroup` |
+| `segment.py` | temporal containers | `Segment` (fields + per-step flags), `Batch` (leading batch dim, context/target slicing) |
+| `episode.py` | trajectory views | `Episode` (lazy read view), `EpisodeWriter` (online append handle) |
+| `loader.py` | query & sampling | `Loader` (stream), `SegmentDataset` (map-style), `TransitionBatch`, `SegmentIndex` |
+| `dataset.py` | entry point | `Dataset` — ties schema, backend, episodes and queries together |
+| `backends/` | storage | `StorageBackend` contract; `memory`, `npz_directory` |
+| `normalize.py` | write boundary | canonical episode/step dicts, `/`-path flattening, alignment shifts |
+| `action_out.py` | write boundary | `ActionOutWriter` — D4RL-style alignment converted at write time |
+
+The spec layer (`schema.py`) never touches array data; the field views (`fields.py`) are runtime views that depend on the schema, not the other way around. Storage sees only flat field keys and temporal selections — spaces, groups, roles and segments are all reconstructed above the storage boundary.
+
+### Key signatures
+
+**Dataset** — construction, writes, queries:
+
+```python
+class Dataset:
+    @classmethod
+    def create(cls, schema, path=None, backend=None, **backend_options) -> Dataset
+    @classmethod
+    def from_episodes(cls, episodes, schema=None, path=None, backend=None,
+                      alignment="action_in", **backend_options) -> Dataset
+    @classmethod
+    def open(cls, path, backend="npz_directory") -> Dataset
+
+    schema: DatasetSchema
+    num_episodes: int
+    def episode(self, episode_id: int) -> Episode
+    def episodes(self) -> Iterator[Episode]
+
+    def add_episode(self, episode, alignment="action_in") -> Episode
+    def new_episode(self, initial=None) -> EpisodeWriter
+    def resume_episode(self, episode_id: int) -> EpisodeWriter
+    def add_reset(self, episode_id, observations, infos=None) -> None
+    def add_step(self, episode_id, step) -> None
+    def add_steps(self, episode_id, steps) -> None
+    def end_episode(self, episode_id, terminated=False, truncated=False) -> Episode
+
+    def loader(self, fields=None, batch_size=1, sequence_length=None,
+               context_length=None, target_length=None, shuffle=True,
+               seed=None, filter=None, pad="suffix") -> Loader
+    def segments(self, fields=None, sequence_length=None, context_length=None,
+                 target_length=None, filter=None, pad="suffix") -> SegmentDataset
+    def sample_transitions(self, batch_size, fields=None, seed=None,
+                           filter=None) -> TransitionBatch
+
+    def rename_space(self, old: str, new: str) -> None
+```
+
+**Episode / EpisodeWriter** — lazy reads and online appends:
+
+```python
+class Episode:
+    id: int
+    length: int
+    terminated: bool          # episode-level flags
+    truncated: bool
+    ongoing: bool
+    def segment(self, start=0, stop=None, fields=None) -> Segment   # arrays [L, ...]
+    def step(self, t: int, fields=None) -> Segment                  # no leading time dim
+    def read(self, fields=None) -> Segment                          # full episode
+    def writer(self) -> EpisodeWriter
+
+class EpisodeWriter:            # stateless handle, keyed by episode_id
+    def add_reset(self, observations, infos=None) -> None
+    def add_step(self, step) -> None       # True terminated/truncated finalizes
+    def add_steps(self, steps) -> None     # leading time dim
+    def end(self, terminated=False, truncated=False) -> Episode
+```
+
+**Fields / Segment / Batch** — the container hierarchy:
+
+```python
+class Fields(Mapping):
+    fields["front_camera"]        # flat field access (also "keyboard/w" paths)
+    fields.image.front_camera     # space attribute access -> SpaceView
+    fields.keyboard.w             # group attribute access -> FieldGroup
+    observations: Fields          # role views (schema-driven)
+    actions: Fields
+    rewards: Fields
+    infos: Fields
+    schema: DatasetSchema
+    def select(self, fields: list[str]) -> Fields
+
+class Segment(Fields):            # arrays [L, ...] (or unbatched single step)
+    terminated: np.ndarray        # True only on a terminal final step
+    truncated: np.ndarray
+    mask: np.ndarray              # True on real steps, False on padding
+
+class Batch(Segment):             # arrays [B, L, ...], flags [B, L]
+    context: Batch                # time slices when configured with
+    target: Batch                 # context_length / target_length
+```
+
+**Loader / SegmentDataset** — the two sampling modes over one segment index:
+
+```python
+class Loader:                     # infinite shuffled stream / sequential scan
+    def sample(self) -> Batch
+    def sample_transitions(self) -> TransitionBatch
+    def __iter__(self) -> Iterator[Batch]
+
+class SegmentDataset:             # map-style; torch DataLoader-compatible
+    def __len__(self) -> int
+    def __getitem__(self, i: int) -> Segment
+    def collate(self, items: list[Segment]) -> Batch   # pass as collate_fn
+
+@dataclass
+class TransitionBatch:            # alignment-free (s, a, r, s', done)
+    observations: Fields
+    actions: Fields
+    rewards: np.ndarray | None
+    next_observations: Fields
+    terminated: np.ndarray
+    truncated: np.ndarray
+```
+
+**Schema** — the persistent logical spec:
+
+```python
+SpaceSpec(key, shape, dtype, low=None, high=None, layout=None, metadata={})
+FieldSpec(key, space, role="observation", semantic_type=None, optional=False, metadata={})
+
+class DatasetSchema:
+    def __init__(self, spaces: Iterable[SpaceSpec], fields: Iterable[FieldSpec])
+    @classmethod
+    def infer(cls, example_episode) -> DatasetSchema
+    def field_keys(self, role=None) -> list[str]
+    def fields_in_space(self, space_key) -> list[str]
+    def rename_space(self, old, new) -> None
+    def to_dict() / from_dict() / to_json() / from_json()
+```
+
+**StorageBackend** — the storage boundary (flat field ids + temporal selections):
+
+```python
+Selection(episode_id, start, stop)
+
+class StorageBackend(ABC):
+    @classmethod
+    def create(cls, schema, path=None, **options) -> StorageBackend
+    @classmethod
+    def open(cls, path) -> StorageBackend
+
+    schema: DatasetSchema
+    num_episodes: int
+    def write_schema(self, schema) -> None
+    def read_fields(self, field_ids, selection) -> Payload   # field dicts or SpaceBlocks
+    def create_episode(self) -> int
+    def append_steps(self, episode_id, fields) -> None
+    def finalize_episode(self, episode_id, terminated, truncated) -> None
+    def episode_length / episode_terminated / episode_truncated / episode_ongoing
+```
