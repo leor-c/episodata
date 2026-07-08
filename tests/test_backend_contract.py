@@ -41,7 +41,7 @@ def test_space_oriented_backend_is_transparent():
         assert np.array_equal(a[key], b[key])
     assert b.image.front_camera.shape == (4, 3, 8, 8)
 
-    batch = space_oriented.loader(sequence_length=3, batch_size=4, seed=0).sample()
+    batch = space_oriented.segment_stream(sequence_length=3, batch_size=4, seed=0).sample()
     assert batch["front_camera"].shape == (4, 3, 3, 8, 8)
 
 

@@ -173,7 +173,7 @@ Core operations include:
 Example:
 
 ```python
-loader = dataset.loader(
+stream = dataset.segment_stream(
     fields=["front_camera", "state", "action"],
     context_length=4,
     target_length=32,
@@ -338,7 +338,7 @@ Toy usage:
 ```python
 dataset = Dataset.from_episodes(episodes)
 
-loader = dataset.loader(
+stream = dataset.segment_stream(
     sequence_length=32,
     batch_size=64,
 )
@@ -349,7 +349,7 @@ Large-scale usage:
 ```python
 dataset = Dataset.open("s3://bucket/data")
 
-loader = dataset.loader(
+stream = dataset.segment_stream(
     sequence_length=32,
     batch_size=64,
     workers=32,
@@ -389,7 +389,7 @@ The implementation layers modules so that each depends only on the ones above it
 | `fields.py` | generic field views | `Fields` (flat named arrays + space/group/role access), `SpaceView`, `FieldGroup` |
 | `segment.py` | temporal containers | `Segment` (fields + per-step flags), `Batch` (leading batch dim, context/target slicing) |
 | `episode.py` | trajectory views | `Episode` (lazy read view), `EpisodeWriter` (online append handle) |
-| `sampling.py` | query & sampling | `Loader` (stream), `SegmentDataset` (map-style), `TransitionBatch`, `SegmentIndex` |
+| `sampling.py` | query & sampling | `SegmentStream` (stream), `SegmentDataset` (map-style), `TransitionBatch`, `SegmentIndex` |
 | `dataset.py` | entry point | `Dataset` — ties schema, backend, episodes and queries together |
 | `backends/` | storage | `StorageBackend` contract; `memory`, `npz_directory` |
 | `normalize.py` | write boundary | canonical episode/step dicts, `/`-path flattening, alignment shifts |
@@ -424,9 +424,9 @@ class Dataset:
     def add_steps(self, episode_id, steps) -> None
     def end_episode(self, episode_id, terminated=False, truncated=False) -> Episode
 
-    def loader(self, fields=None, batch_size=1, sequence_length=None,
+    def segment_stream(self, fields=None, batch_size=1, sequence_length=None,
                context_length=None, target_length=None, shuffle=True,
-               seed=None, filter=None, pad="suffix") -> Loader
+               seed=None, filter=None, pad="suffix") -> SegmentStream
     def segments(self, fields=None, sequence_length=None, context_length=None,
                  target_length=None, filter=None, pad="suffix") -> SegmentDataset
     def sample_transitions(self, batch_size, fields=None, seed=None,
@@ -480,7 +480,7 @@ class Batch(Segment):             # arrays [B, L, ...], flags [B, L]
     target: Batch                 # context_length / target_length
 ```
 
-**Loader / SegmentDataset** — Loader is a thin sampling policy over
+**SegmentStream / SegmentDataset** — SegmentStream is a thin sampling policy over
 SegmentDataset (its `segments` attribute), which owns all segment
 reading, padding and collation:
 
@@ -491,7 +491,7 @@ class SegmentDataset:             # map-style; torch DataLoader-compatible
     def collate(self, items: list[Segment]) -> Batch   # pass as collate_fn
     def refresh(self) -> None     # re-snapshot index; no-op unless data changed
 
-class Loader:                     # infinite shuffled stream / sequential scan
+class SegmentStream:              # infinite shuffled stream / sequential scan
     segments: SegmentDataset      # refreshed on every sample()
     def sample(self) -> Batch
     def sample_transitions(self) -> TransitionBatch

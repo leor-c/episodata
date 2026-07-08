@@ -70,14 +70,14 @@ if __name__ == "__main__":
     dataset = Dataset.open("example_dataset")
 
     # Context/target segments for world-model training.
-    loader = dataset.loader(
+    stream = dataset.segment_stream(
         fields=["front_camera", "state", "action"],
         context_length=4,
         target_length=12,
         batch_size=16,
         seed=0,
     )
-    batch = loader.sample()
+    batch = stream.sample()
     print("batch:", batch.image.front_camera.shape)
     print("context/target:", batch.context["state"].shape, batch.target["state"].shape)
 

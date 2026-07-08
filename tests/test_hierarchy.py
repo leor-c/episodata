@@ -60,10 +60,10 @@ def test_prefix_field_selection(backend_name, dataset_path):
     dataset = Dataset.from_episodes(
         [minecraft_episode()], path=dataset_path, backend=backend_name
     )
-    loader = dataset.loader(
+    stream = dataset.segment_stream(
         fields=["pov", "keyboard"], sequence_length=3, batch_size=2, seed=0
     )
-    batch = loader.sample()
+    batch = stream.sample()
     assert set(batch.keys()) == {"pov", "keyboard/w", "keyboard/jump"}
     assert batch.keyboard.w.shape == (2, 3)
 

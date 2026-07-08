@@ -6,13 +6,13 @@ from tests.conftest import make_episode
 
 
 def test_segment_batch_shapes(dataset):
-    loader = dataset.loader(
+    stream = dataset.segment_stream(
         fields=["front_camera", "state", "action"],
         sequence_length=4,
         batch_size=6,
         seed=0,
     )
-    batch = loader.sample()
+    batch = stream.sample()
     assert batch["front_camera"].shape == (6, 4, 3, 8, 8)
     assert batch.image.front_camera.shape == (6, 4, 3, 8, 8)
     assert batch["state"].shape == (6, 4, 5)
@@ -20,8 +20,8 @@ def test_segment_batch_shapes(dataset):
 
 
 def test_context_target_segments(dataset):
-    loader = dataset.loader(context_length=2, target_length=3, batch_size=4, seed=0)
-    batch = loader.sample()
+    stream = dataset.segment_stream(context_length=2, target_length=3, batch_size=4, seed=0)
+    batch = stream.sample()
     assert batch["state"].shape == (4, 5, 5)
     assert batch.context["state"].shape == (4, 2, 5)
     assert batch.target["state"].shape == (4, 3, 5)
@@ -33,14 +33,14 @@ def test_context_target_segments(dataset):
 
 
 def test_seed_determinism(dataset):
-    a = dataset.loader(sequence_length=3, batch_size=5, seed=42).sample()
-    b = dataset.loader(sequence_length=3, batch_size=5, seed=42).sample()
+    a = dataset.segment_stream(sequence_length=3, batch_size=5, seed=42).sample()
+    b = dataset.segment_stream(sequence_length=3, batch_size=5, seed=42).sample()
     assert np.array_equal(a["state"], b["state"])
 
 
 def test_sequential_scan_covers_all_segments(dataset):
-    loader = dataset.loader(fields=["reward"], sequence_length=4, batch_size=3, shuffle=False)
-    segments = [s for batch in loader for s in batch["reward"]]
+    stream = dataset.segment_stream(fields=["reward"], sequence_length=4, batch_size=3, shuffle=False)
+    segments = [s for batch in stream for s in batch["reward"]]
     # episode lengths 10 and 7 -> (10-4+1) + (7-4+1) = 11 segments
     assert len(segments) == 11
     source = make_episode(10, seed=0)["rewards"]
@@ -49,8 +49,8 @@ def test_sequential_scan_covers_all_segments(dataset):
 
 
 def test_terminated_flag_only_on_final_step(dataset):
-    loader = dataset.loader(fields=["reward"], sequence_length=4, batch_size=2, shuffle=False)
-    batches = list(loader)
+    stream = dataset.segment_stream(fields=["reward"], sequence_length=4, batch_size=2, shuffle=False)
+    batches = list(stream)
     flat_terminated = np.concatenate([b.terminated for b in batches], axis=0)
     # episode 0 (length 10, terminated) contributes segments 0..6; only the
     # segment ending at step 9 carries a True, on its last position.
@@ -88,31 +88,31 @@ def test_transition_sampling(dataset):
 
 
 def test_filter(dataset):
-    loader = dataset.loader(
+    stream = dataset.segment_stream(
         fields=["reward"],
         sequence_length=2,
         batch_size=4,
         seed=0,
         filter=lambda ep: len(ep) > 8,
     )
-    scan = dataset.loader(
+    scan = dataset.segment_stream(
         fields=["reward"], sequence_length=2, shuffle=False, filter=lambda ep: len(ep) > 8
     )
     # only episode 0 (length 10) passes the filter -> 9 segments
     assert sum(len(b["reward"]) for b in scan) == 9
-    loader.sample()  # sampling under the filter works
+    stream.sample()  # sampling under the filter works
 
 
 def test_segment_too_long_raises_with_pad_disabled(dataset):
     with pytest.raises(ValueError, match="no episode"):
-        dataset.loader(sequence_length=100, pad=None).sample()
+        dataset.segment_stream(sequence_length=100, pad=None).sample()
 
 
 def test_short_episodes_sampled_with_padding(dataset):
     # segment longer than both episodes (10 and 7): each becomes one
     # zero-padded segment, so every drawn mask sums to an episode length
-    loader = dataset.loader(fields=["reward"], sequence_length=12, batch_size=16, seed=0)
-    batch = loader.sample()
+    stream = dataset.segment_stream(fields=["reward"], sequence_length=12, batch_size=16, seed=0)
+    batch = stream.sample()
     assert batch["reward"].shape == (16, 12)
     assert batch.mask.shape == (16, 12)
     assert set(batch.mask.sum(axis=1)) <= {7, 10}
@@ -123,11 +123,11 @@ def test_short_episodes_sampled_with_padding(dataset):
         assert np.all(batch["reward"][row, length:] == 0)
 
 
-def test_prefix_padding_in_loader(dataset):
-    loader = dataset.loader(
+def test_prefix_padding_in_stream(dataset):
+    stream = dataset.segment_stream(
         fields=["reward"], sequence_length=12, batch_size=8, seed=0, pad="prefix"
     )
-    batch = loader.sample()
+    batch = stream.sample()
     for row in range(8):
         length = batch.mask[row].sum()
         assert batch.mask[row, 12 - length:].all()
@@ -135,7 +135,7 @@ def test_prefix_padding_in_loader(dataset):
 
 
 def test_full_segments_have_all_true_mask(dataset):
-    batch = dataset.loader(fields=["reward"], sequence_length=4, batch_size=5, seed=0).sample()
+    batch = dataset.segment_stream(fields=["reward"], sequence_length=4, batch_size=5, seed=0).sample()
     assert batch.mask.all()
 
 
@@ -160,9 +160,9 @@ def test_transition_sampling_skips_short_episodes():
 
 
 def test_online_episodes_become_sampleable(dataset):
-    loader = dataset.loader(fields=["reward"], sequence_length=15, batch_size=2, seed=0, pad=None)
+    stream = dataset.segment_stream(fields=["reward"], sequence_length=15, batch_size=2, seed=0, pad=None)
     with pytest.raises(ValueError):
-        loader.sample()
+        stream.sample()
     dataset.add_episode(make_episode(20, seed=3))
-    batch = loader.sample()
+    batch = stream.sample()
     assert batch["reward"].shape == (2, 15)

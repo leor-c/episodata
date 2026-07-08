@@ -18,7 +18,7 @@ from .backends import (
 from .dataset import Dataset
 from .episode import Episode, EpisodeWriter
 from .fields import FieldGroup, Fields, Observation, SpaceView
-from .sampling import Loader, SegmentDataset, TransitionBatch
+from .sampling import SegmentDataset, SegmentStream, TransitionBatch
 from .schema import DatasetSchema, FieldSpec, SpaceSpec
 from .segment import Batch, Segment
 
@@ -34,12 +34,12 @@ __all__ = [
     "FieldGroup",
     "FieldSpec",
     "Fields",
-    "Loader",
     "MemoryBackend",
     "NpzDirectoryBackend",
     "Observation",
     "Segment",
     "SegmentDataset",
+    "SegmentStream",
     "Selection",
     "SpaceBlock",
     "SpaceSpec",

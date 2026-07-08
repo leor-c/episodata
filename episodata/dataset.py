@@ -16,7 +16,7 @@ import numpy as np
 
 from .backends.base import Selection, StorageBackend, get_backend, normalize_payload
 from .episode import Episode, EpisodeWriter
-from .sampling import Loader, SegmentDataset
+from .sampling import SegmentDataset, SegmentStream
 from .normalize import SEP, normalize_episode, normalize_step, shift_action_out
 from .schema import DatasetSchema
 
@@ -269,7 +269,7 @@ class Dataset:
 
     # -- queries -----------------------------------------------------------------
 
-    def loader(
+    def segment_stream(
         self,
         fields: list[str] | None = None,
         batch_size: int = 1,
@@ -280,15 +280,15 @@ class Dataset:
         seed: int | None = None,
         filter: Callable[[Episode], bool] | None = None,
         pad: str | None = "suffix",
-    ) -> Loader:
-        """Build a segment loader. See :class:`Loader`.
+    ) -> SegmentStream:
+        """Build a segment stream. See :class:`SegmentStream`.
 
         ``pad`` controls segments drawn from episodes shorter than the
         requested length: zero-padded at the end (``"suffix"``, default) or
         at the start (``"prefix"``), with ``Batch.mask`` marking real
         steps; ``None`` skips short episodes.
         """
-        return Loader(
+        return SegmentStream(
             self,
             fields=fields,
             batch_size=batch_size,
@@ -312,8 +312,8 @@ class Dataset:
     ) -> SegmentDataset:
         """Build a map-style, indexable view over segments. See
         :class:`SegmentDataset` — suited to ``torch.utils.data.DataLoader``
-        and its ``num_workers`` parallelism, unlike :meth:`loader`.
-        ``pad`` behaves as in :meth:`loader`. On a growing dataset, call
+        and its ``num_workers`` parallelism, unlike :meth:`segment_stream`.
+        ``pad`` behaves as in :meth:`segment_stream`. On a growing dataset, call
         :meth:`SegmentDataset.refresh` between epochs to make newly
         appended episodes visible."""
         return SegmentDataset(
@@ -333,16 +333,16 @@ class Dataset:
         seed: int | None = None,
         filter: Callable[[Episode], bool] | None = None,
     ):
-        """One-shot transition sampling; see :meth:`Loader.sample_transitions`.
+        """One-shot transition sampling; see :meth:`SegmentStream.sample_transitions`.
 
         Sampled without padding: a padded segment would fabricate a
         transition into a zero-filled next observation.
         """
-        loader = self.loader(
+        stream = self.segment_stream(
             fields=fields, batch_size=batch_size, sequence_length=2, seed=seed, filter=filter,
             pad=None,
         )
-        return loader.sample_transitions()
+        return stream.sample_transitions()
 
     # -- internal helpers ------------------------------------------------------------
 

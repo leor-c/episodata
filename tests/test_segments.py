@@ -22,12 +22,12 @@ def test_getitem_out_of_range_raises(dataset):
         segments[len(segments)]
 
 
-def test_matches_sequential_loader_scan(dataset):
-    """SegmentDataset and Loader share SegmentIndex/read_segment, so a
-    sequential (unshuffled) Loader scan and direct segment[i] access must
+def test_matches_sequential_stream_scan(dataset):
+    """SegmentDataset and SegmentStream share SegmentIndex/read_segment, so a
+    sequential (unshuffled) SegmentStream scan and direct segment[i] access must
     agree segment-for-segment."""
-    loader = dataset.loader(fields=["reward"], sequence_length=4, batch_size=3, shuffle=False)
-    scanned = [s for batch in loader for s in batch["reward"]]
+    stream = dataset.segment_stream(fields=["reward"], sequence_length=4, batch_size=3, shuffle=False)
+    scanned = [s for batch in stream for s in batch["reward"]]
     segments = dataset.segments(fields=["reward"], sequence_length=4)
     assert len(segments) == len(scanned)
     for i, expected in enumerate(scanned):
@@ -47,7 +47,7 @@ def test_terminated_flag_only_on_final_step(dataset):
         assert segments[i].truncated.sum() == 0
 
 
-def test_collate_matches_loader_batch_shape(dataset):
+def test_collate_matches_stream_batch_shape(dataset):
     segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=4)
     items = [segments[i] for i in (6, 0, 7)]
     batch = segments.collate(items)

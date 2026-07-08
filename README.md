@@ -74,7 +74,7 @@ obs["keyboard/w"]                  # flat access always works
 obs.keyboard.w                     # group access
 obs.inventory.items()              # iterate a group
 
-dataset.loader(fields=["pov", "keyboard"])   # a prefix selects the subtree
+dataset.segment_stream(fields=["pov", "keyboard"])   # a prefix selects the subtree
 transitions.actions.keyboard.w               # groups work everywhere
 ```
 
@@ -107,31 +107,31 @@ The persisted schema is authoritative — it is never re-inferred on reopen.
 
 ```python
 # Fixed-length segments / context+target segments for world-model training
-loader = dataset.loader(
+stream = dataset.segment_stream(
     fields=["front_camera", "state", "action"],
     context_length=4,
     target_length=32,
     batch_size=64,
     seed=0,
 )
-batch = loader.sample()             # arrays [B, L, ...]
+batch = stream.sample()             # arrays [B, L, ...]
 batch.context, batch.target         # time-sliced views
 batch.terminated                    # [B, L] done flags
 
 # Sequential scan (evaluation, statistics)
-for batch in dataset.loader(sequence_length=32, shuffle=False): ...
+for batch in dataset.segment_stream(sequence_length=32, shuffle=False): ...
 
 # Transitions for control
 t = dataset.sample_transitions(batch_size=256)
 t.observations, t.actions, t.rewards, t.next_observations, t.terminated
 
 # Filtering
-dataset.loader(sequence_length=8, filter=lambda ep: ep.terminated)
+dataset.segment_stream(sequence_length=8, filter=lambda ep: ep.terminated)
 ```
 
 ### Map-style access (`torch.utils.data.DataLoader`)
 
-`loader()` is an infinite, shuffled, with-replacement stream. `segments()`
+`segment_stream()` is an infinite, shuffled, with-replacement stream. `segments()`
 gives the same fixed-length segments as an indexable, map-style dataset
 instead — its `__len__`/`__getitem__` satisfy `DataLoader`'s map-style
 protocol by duck typing, so reads (including per-episode decompression on

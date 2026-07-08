@@ -1,6 +1,6 @@
 """Query and sampling API.
 
-A :class:`Loader` is a declarative description of what the user wants —
+A :class:`SegmentStream` is a declarative description of what the user wants —
 fields, segment shape, batch size, filtering — decoupled from how the
 backend executes the reads. The v1 execution strategy is straightforward
 per-segment reads; a backend-aware planner can replace it later without
@@ -13,7 +13,7 @@ zero-padded up to the segment length (at the end by default, at the start
 with ``pad="prefix"``), and the per-step ``mask`` marks which steps are
 real. :class:`SegmentDataset` (a map-style, indexable view — suited to
 ``torch.utils.data.DataLoader`` and its ``num_workers`` parallelism) is
-where segments are read, padded and collated; :class:`Loader` (an
+where segments are read, padded and collated; :class:`SegmentStream` (an
 infinite, shuffled, with-replacement stream) is a thin sampling policy on
 top of it, drawing random indices and collating ``segments[i]`` items into
 batches — one source of truth for segment semantics.
@@ -286,7 +286,7 @@ class SegmentDataset:
         )
 
 
-class Loader:
+class SegmentStream:
     """Infinite, shuffled, with-replacement segment stream.
 
     A thin sampling policy over :class:`SegmentDataset` (exposed as
