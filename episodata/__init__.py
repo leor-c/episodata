@@ -1,7 +1,8 @@
 """episodata — a unified episode dataset library for world models and control.
 
 Stable semantics (schema) + use-case-driven queries (sampling) + replaceable
-storage (backends). See ``world_model_dataset_design.md``.
+storage (backends). See ``docs/api.md`` for the module layering and key
+signatures.
 """
 
 from .action_out import ActionOutWriter

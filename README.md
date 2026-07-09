@@ -5,7 +5,7 @@ video games, or any sequential-decision domain. One logical data model that
 works for toy projects and scales to large multimodal datasets by swapping
 the storage backend, never the API.
 
-The design (see `world_model_dataset_design.md`) separates three layers:
+The design separates three layers:
 
 1. **Logical data model** — schema, spaces, fields, observations
 2. **Query and sampling API** — episodes, segments, transitions
@@ -14,7 +14,9 @@ The design (see `world_model_dataset_design.md`) separates three layers:
 New here? [`docs/getting_started.md`](docs/getting_started.md) covers the
 design and basic usage in a few minutes, and
 [`examples/getting_started.ipynb`](examples/getting_started.ipynb) is a
-runnable tour. This README is the full reference.
+runnable tour. This README is the full reference;
+[`docs/api.md`](docs/api.md) lists the module layering and key signatures
+at a glance.
 
 ## Quick start
 
