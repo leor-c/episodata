@@ -87,20 +87,20 @@ dataset = Dataset.from_episodes(episodes)  # schema inferred automatically
 ```python
 seg = dataset.episode(0).segment(0, 8)   # transitions [0, 8) of episode 0
 
-seg["front_camera"]      # [8, ...] the obs each action was taken at
-seg.next_observations    # ... and the obs each action produced
-seg.action, seg.reward   # bare action/reward arrays resolve directly
-seg.image.front_camera   # space access — grouped by shared shape/dtype
-seg.observations         # role view: every observation-role field
-seg.terminated           # [8] done flag of each transition
+seg.obs.front_camera       # [8, ...] the obs each action was taken at
+seg.next_obs.front_camera  # ... and the obs each action produced
+seg.action, seg.reward     # bare action/reward arrays resolve directly
+seg.obs.space("image")     # explicit space access — grouped by shared shape/dtype
+seg.terminated             # [8] done flag of each transition
 ```
 
-Fields, spaces, and roles are just different ways of naming the same flat
-storage — pick whichever reads best at each call site. `observations`,
-`next_observations` and the action/reward arrays are zero-copy views into
-one shared row buffer, so consecutive-in-time arrays never duplicate
+Access is role-first: `seg.observation` / `seg.obs` / `seg.observations`
+are aliases for the same object, and a role holding one bare array (a
+non-dict source) resolves straight to that array — hence `seg.action`.
+`seg.obs`, `seg.next_obs` and the action/reward arrays are zero-copy views
+into one shared row buffer, so consecutive-in-time arrays never duplicate
 memory; a segment starting at 0 surfaces the reset observation as
-`observations[0]`.
+`seg.obs[k][0]`.
 
 ## Sampling for training
 
@@ -175,11 +175,11 @@ stream = dataset.segment_stream(
     batch_size=64, seed=0,
 )
 batch = stream.sample()          # arrays [B, L, ...]
-batch.context, batch.target      # time-sliced views; target.observations
-                                 # starts where context.next_observations ends
+batch.context, batch.target      # time-sliced views; target.observation
+                                 # starts where context.next_observation ends
 
-transitions = dataset.sample_transitions(batch_size=256)
-transitions.observations, transitions.actions, transitions.next_observations
+transitions = dataset.sample_transitions(batch_size=256)  # arrays [B, ...]
+transitions.obs, transitions.action, transitions.next_obs
 ```
 
 ## Persisting and scaling up

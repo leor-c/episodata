@@ -8,6 +8,11 @@ from episodata import Dataset
 def make_episode(length: int, seed: int) -> dict:
     rng = np.random.default_rng(seed)
     return {
+        "initial_observation": {
+            "front_camera": rng.integers(0, 256, size=(3, 64, 64), dtype=np.uint8),
+            "wrist_camera": rng.integers(0, 256, size=(3, 64, 64), dtype=np.uint8),
+            "state": rng.standard_normal(7).astype(np.float32),
+        },
         "observations": {
             "front_camera": rng.integers(0, 256, size=(length, 3, 64, 64), dtype=np.uint8),
             "wrist_camera": rng.integers(0, 256, size=(length, 3, 64, 64), dtype=np.uint8),
@@ -35,8 +40,8 @@ if __name__ == "__main__":
 
     # Episode and observation access.
     episode = dataset.episode(0)
-    obs = episode.segment(0, 8, fields=["front_camera", "state", "action"])
-    print("segment:", obs.image.front_camera.shape, obs.proprio.state.shape)
+    seg = episode.segment(0, 8, fields=["front_camera", "state", "action"])
+    print("segment:", seg.obs.front_camera.shape, seg.obs.space("proprio").state.shape)
 
     # Online append, mirroring the Gym loop: the episode begins at reset,
     # then one row per env.step (the action sent plus what it produced).
@@ -77,10 +82,10 @@ if __name__ == "__main__":
         seed=0,
     )
     batch = stream.sample()
-    print("batch:", batch.image.front_camera.shape)
-    print("context/target:", batch.context["state"].shape, batch.target["state"].shape)
+    print("batch:", batch.obs.space("image").front_camera.shape)
+    print("context/target:", batch.context.obs.state.shape, batch.target.obs.state.shape)
 
     # Transition sampling for control.
     transitions = dataset.sample_transitions(batch_size=32, seed=0)
-    print("transitions:", transitions.observations["front_camera"].shape,
-          transitions.rewards.shape, transitions.terminated.sum(), "terminal")
+    print("transitions:", transitions.obs.front_camera.shape,
+          transitions.reward.shape, transitions.terminated.sum(), "terminal")

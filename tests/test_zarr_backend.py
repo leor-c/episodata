@@ -28,11 +28,11 @@ def assert_episode_equal(dataset, episode_id, episode):
     segment = dataset.episode(episode_id).read()
     for key, expected in episode["observations"].items():
         # the round-trip identities of the transition view
-        assert np.array_equal(segment.next_observations[key], expected)
-        assert np.array_equal(segment[key][0], episode["initial_observation"][key])
-        assert np.array_equal(segment[key][1:], expected[:-1])
-    assert np.array_equal(segment["action"], episode["actions"]["action"])
-    assert np.array_equal(segment["reward"], episode["rewards"])
+        assert np.array_equal(segment.next_obs[key], expected)
+        assert np.array_equal(segment.obs[key][0], episode["initial_observation"][key])
+        assert np.array_equal(segment.obs[key][1:], expected[:-1])
+    assert np.array_equal(segment.action, episode["actions"]["action"])
+    assert np.array_equal(segment.reward, episode["rewards"])
 
 
 def test_reopen_round_trip(tmp_path):
@@ -73,7 +73,7 @@ def test_ongoing_episode_survives_flush_and_reopen(tmp_path):
     segment = final.episode(writer.episode_id).read()
     assert final.episode(writer.episode_id).length == 7
     expected = np.concatenate([first["rewards"], second["rewards"]])
-    assert np.array_equal(segment["reward"], expected)
+    assert np.array_equal(segment.reward, expected)
     assert final.episode(writer.episode_id).terminated
 
 
@@ -112,9 +112,9 @@ def test_out_of_order_finalize_of_interleaved_episodes(tmp_path):
     for episode_id, source in ((writer_a.episode_id, a), (writer_b.episode_id, b)):
         segment = reopened.episode(episode_id).read()
         for key, expected in source["observations"].items():
-            assert np.array_equal(segment.next_observations[key], expected)
-        assert np.array_equal(segment["action"], source["actions"]["action"])
-        assert np.array_equal(segment["reward"], source["rewards"])
+            assert np.array_equal(segment.next_obs[key], expected)
+        assert np.array_equal(segment.action, source["actions"]["action"])
+        assert np.array_equal(segment.reward, source["rewards"])
     assert reopened.episode(writer_b.episode_id).truncated
 
 
@@ -126,7 +126,7 @@ def test_reads_across_chunk_boundaries(tmp_path):
     for start, stop in [(0, 50), (3, 11), (17, 18), (30, 49)]:
         segment = dataset.episode(0).segment(start, stop)
         assert np.array_equal(
-            segment.next_observations["front_camera"],
+            segment.next_obs["front_camera"],
             episodes[0]["observations"]["front_camera"][start:stop],
         )
 

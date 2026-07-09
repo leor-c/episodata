@@ -1,53 +1,70 @@
+import warnings
+
 import numpy as np
 import pytest
 
-from episodata import Dataset, Segment, SpaceView
+from episodata import Dataset, Fields, Segment, SpaceView
 
 
 def test_access_patterns(dataset):
-    obs = dataset.episode(0).segment(0, 4)
-    # flat dict-style
-    assert obs["front_camera"].shape == (4, 3, 8, 8)
-    # space attribute access
-    assert obs.image.front_camera.shape == (4, 3, 8, 8)
-    assert np.array_equal(obs.image["front_camera"], obs["front_camera"])
+    seg = dataset.episode(0).segment(0, 4)
+    # role → flat dict-style
+    assert seg.obs["front_camera"].shape == (4, 3, 8, 8)
+    # role → field attribute access
+    assert seg.obs.front_camera.shape == (4, 3, 8, 8)
+    # explicit space access
+    assert seg.obs.space("image").front_camera.shape == (4, 3, 8, 8)
+    assert np.array_equal(seg.obs.space("image")["front_camera"], seg.obs["front_camera"])
     # iteration over a space
-    keys = dict(obs.image.items())
+    keys = dict(seg.obs.space("image").items())
     assert set(keys) == {"front_camera", "wrist_camera"}
     # stacking valid within a space
-    assert obs.image.stacked().shape == (2, 4, 3, 8, 8)
+    assert seg.obs.space("image").stacked().shape == (2, 4, 3, 8, 8)
 
 
-def test_trivial_space_unwraps_to_array(dataset):
+def test_role_aliases_are_identical(dataset):
     seg = dataset.episode(0).segment(0, 4)
-    # the action/reward spaces hold a single same-named field, so attribute
-    # access resolves straight to the array
+    assert seg.obs is seg.observation
+    assert seg.observations is seg.observation
+    assert seg.actions is seg.action
+    assert seg.rewards is seg.reward
+    assert seg.infos is seg.info
+    assert seg.next_obs is seg.next_observation
+    assert seg.next_observations is seg.next_observation
+    assert seg.next_infos is seg.next_info
+
+
+def test_bare_role_unwraps_to_array(dataset):
+    seg = dataset.episode(0).segment(0, 4)
+    # a role whose only field carries the role's own name resolves straight
+    # to the array
     assert isinstance(seg.action, np.ndarray)
     assert seg.action.shape == (4, 2)
-    assert np.array_equal(seg.action, seg["action"])
     assert isinstance(seg.reward, np.ndarray)
     assert seg.reward.shape == (4,)
-    # a structural space keeps its view even with differently-named fields
-    assert isinstance(seg.image, SpaceView)
-    # the view of a trivial space stays reachable explicitly
-    view = seg.space_view("action")
-    assert isinstance(view, SpaceView)
-    assert set(view) == {"action"}
+    # a multi-field role keeps the view
+    assert isinstance(seg.obs, Fields)
+    # unwrapping survives field selection
+    selected = seg.select(["state", "action"])
+    assert isinstance(selected.action, np.ndarray)
+    assert selected.action.shape == (4, 2)
 
 
-def test_lone_same_named_field_unwraps():
+def test_bare_observation_unwraps_to_array():
     episode = {
-        "initial_observation": {"image": np.zeros((3, 8, 8), dtype=np.uint8)},
-        "observations": {"image": np.zeros((4, 3, 8, 8), dtype=np.uint8)},
+        "initial_observation": np.zeros(3, dtype=np.float32),
+        "observations": np.zeros((4, 3), dtype=np.float32),
         "actions": np.zeros((4, 2), dtype=np.float32),
         "rewards": np.zeros(4, dtype=np.float32),
     }
     seg = Dataset.from_episodes([episode]).episode(0).read()
-    assert isinstance(seg.image, np.ndarray)
-    assert seg.image.shape == (4, 3, 8, 8)
+    assert isinstance(seg.obs, np.ndarray)
+    assert seg.obs.shape == (4, 3)
+    assert isinstance(seg.next_obs, np.ndarray)
+    assert seg.next_obs.shape == (4, 3)
 
 
-def test_shadowed_space_stays_navigable():
+def test_multi_field_action_role_stays_a_view():
     episode = {
         "initial_observation": {"o": np.zeros(3, dtype=np.float32)},
         "observations": {"o": np.zeros((4, 3), dtype=np.float32)},
@@ -56,32 +73,51 @@ def test_shadowed_space_stays_navigable():
             "action2": np.ones((4, 2), dtype=np.float32),
         },
     }
-    with pytest.warns(UserWarning, match="shadowed by space"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # nothing shadows anything anymore
         ds = Dataset.from_episodes([episode])
     seg = ds.episode(0).read()
-    # with siblings the space wins attribute lookup and stays navigable
-    assert isinstance(seg.action, SpaceView)
-    assert seg.action.action2.shape == (4, 2)
+    assert isinstance(seg.action, Fields)
     assert seg.action.action.shape == (4, 2)
-    assert set(seg.space_view("action")) == {"action", "action2"}
-    # flat item access still reads the shadowed field itself
-    assert isinstance(seg["action"], np.ndarray)
-    assert np.array_equal(seg["action"], seg.action.action)
+    assert seg.action.action2.shape == (4, 2)
+    assert np.array_equal(seg.action["action"], seg.action.action)
+    assert seg.actions is seg.action
+
+
+def test_no_top_level_shortcuts(dataset):
+    seg = dataset.episode(0).segment(0, 4)
+    with pytest.raises(AttributeError):
+        _ = seg.front_camera
+    with pytest.raises(AttributeError):
+        _ = seg.image
+    with pytest.raises(TypeError):
+        _ = seg["front_camera"]
+    assert not hasattr(seg, "space_view")
 
 
 def test_unknown_access_raises(dataset):
-    obs = dataset.episode(0).segment(0, 2)
+    seg = dataset.episode(0).segment(0, 2)
     with pytest.raises(AttributeError):
-        _ = obs.nonexistent
+        _ = seg.obs.nonexistent
     with pytest.raises(AttributeError):
-        _ = obs.image.nonexistent
+        _ = seg.obs.space("image").nonexistent
     with pytest.raises(KeyError):
-        _ = obs["nonexistent"]
+        _ = seg.obs["nonexistent"]
+    with pytest.raises(KeyError):
+        _ = seg.obs.space("nonexistent")
+
+
+def test_empty_role_is_empty_view(dataset):
+    seg = dataset.episode(0).segment(0, 3, fields=["state", "action"])
+    reward = seg.reward
+    assert isinstance(reward, Fields)
+    assert len(reward) == 0
 
 
 def test_field_selection(dataset):
-    obs = dataset.episode(0).segment(0, 3, fields=["state", "action"])
-    assert set(obs.keys()) == {"state", "action"}
+    seg = dataset.episode(0).segment(0, 3, fields=["state", "action"])
+    assert set(seg.obs.keys()) == {"state"}
+    assert seg.action.shape == (3, 2)
     with pytest.raises(KeyError):
         dataset.episode(0).segment(0, 3, fields=["missing"])
 
@@ -97,9 +133,9 @@ def test_episode_methods_return_segments(dataset):
 def test_role_views(dataset):
     segment = dataset.episode(0).segment(0, 4)
     assert set(segment.observations) == {"front_camera", "wrist_camera", "state"}
-    assert set(segment.actions) == {"action"}
-    assert set(segment.rewards) == {"reward"}
-    assert segment.actions["action"].shape == (4, 2)
+    assert isinstance(segment.obs.space("image"), SpaceView)
+    assert segment.action.shape == (4, 2)
+    assert segment.reward.shape == (4,)
 
 
 def test_segment_flags_only_at_episode_end(dataset):
@@ -119,14 +155,6 @@ def test_segment_flags_only_at_episode_end(dataset):
 def test_step_has_scalar_flags(dataset):
     episode = dataset.episode(0)
     last = episode.step(-1)
-    assert last["state"].shape == (5,)
+    assert last.obs["state"].shape == (5,)
     assert last.terminated and not last.truncated and last.mask
     assert not episode.step(0).terminated
-
-
-def test_role_views_preserve_flags(dataset):
-    segment = dataset.episode(0).read()
-    rewards = segment.rewards
-    assert isinstance(rewards, Segment)
-    assert np.array_equal(rewards.terminated, segment.terminated)
-    assert np.array_equal(rewards.mask, segment.mask)

@@ -37,12 +37,15 @@ def test_space_oriented_backend_is_transparent():
 
     a = reference.episode(0).segment(1, 5)
     b = space_oriented.episode(0).segment(1, 5)
-    for key in a:
-        assert np.array_equal(a[key], b[key])
-    assert b.image.front_camera.shape == (4, 3, 8, 8)
+    assert set(a.obs) == set(b.obs)
+    for key in a.obs:
+        assert np.array_equal(a.obs[key], b.obs[key])
+    assert np.array_equal(a.action, b.action)
+    assert np.array_equal(a.reward, b.reward)
+    assert b.obs.space("image").front_camera.shape == (4, 3, 8, 8)
 
     batch = space_oriented.segment_stream(sequence_length=3, batch_size=4, seed=0).sample()
-    assert batch["front_camera"].shape == (4, 3, 3, 8, 8)
+    assert batch.obs.front_camera.shape == (4, 3, 3, 8, 8)
 
 
 def test_normalize_payload_forms():

@@ -62,9 +62,9 @@ def test_action_space_naming():
     assert schema.field("state").space != schema.field("action").space
 
 
-def test_shadowed_field_warns():
-    # a field named after its space is ambiguous once siblings exist:
-    # attribute access yields the view, item access the field
+def test_same_named_field_and_space_never_warn():
+    # role-first access with explicit .space() leaves nothing to shadow: a
+    # field named after its space is unambiguous, siblings or not
     episode = {
         "initial_observation": {"o": np.zeros(3, dtype=np.float32)},
         "observations": {"o": np.zeros((4, 3), dtype=np.float32)},
@@ -73,11 +73,9 @@ def test_shadowed_field_warns():
             "action2": np.zeros((4, 2), dtype=np.float32),
         },
     }
-    with pytest.warns(UserWarning, match="shadowed by space"):
-        DatasetSchema.infer(episode)
-    # the trivial collision (lone same-named field) is fine: it unwraps
     with warnings.catch_warnings():
         warnings.simplefilter("error")
+        DatasetSchema.infer(episode)
         DatasetSchema.infer(make_episode(5))
 
 

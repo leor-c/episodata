@@ -30,26 +30,11 @@ from typing import TYPE_CHECKING, Callable
 import numpy as np
 
 from .backends.base import Selection, StorageBackend, normalize_payload
-from .fields import Fields
 from .segment import Batch, Segment
 
 if TYPE_CHECKING:
     from .dataset import Dataset
     from .episode import Episode
-
-
-@dataclasses.dataclass
-class TransitionBatch:
-    """A batch of ``(s, a, r, s', done)`` transitions, arrays batched along
-    axis 0 — a length-1 :class:`Batch` with the time dim squeezed away,
-    for control loops that want unbatched-in-time arrays."""
-
-    observations: Fields
-    actions: Fields
-    rewards: np.ndarray | None
-    next_observations: Fields
-    terminated: np.ndarray
-    truncated: np.ndarray
 
 
 def _resolve_segment_length(
@@ -354,24 +339,21 @@ class SegmentStream:
         draws = self._rng.integers(len(segments), size=self.batch_size)
         return segments.collate([segments[int(i)] for i in draws])
 
-    def sample_transitions(self) -> TransitionBatch:
+    def sample_transitions(self) -> Batch:
         """Draw a batch of single transitions ``(s, a, r, s', done)`` — a
-        length-1 segment batch with the time dim squeezed away."""
+        length-1 segment batch with the time dim squeezed away, so every
+        role accessor is ``[B, ...]``: ``t.obs``, ``t.action``, ``t.reward``,
+        ``t.next_obs``, ``t.terminated``."""
         if self.segment_length != 1:
             raise ValueError("transition sampling requires sequence_length=1")
         batch = self.sample()
-        schema = self.dataset.schema
-        obs_keys = [k for k in self.fields if schema.field(k).role == "observation"]
-        action_keys = [k for k in self.fields if schema.field(k).role == "action"]
-        reward_keys = [k for k in self.fields if schema.field(k).role == "reward"]
-        next_observations = batch.next_observations
-        return TransitionBatch(
-            observations=Fields({k: batch[k][:, 0] for k in obs_keys}, schema),
-            actions=Fields({k: batch[k][:, 0] for k in action_keys}, schema),
-            rewards=batch[reward_keys[0]][:, 0] if reward_keys else None,
-            next_observations=Fields({k: next_observations[k][:, 0] for k in obs_keys}, schema),
+        return Batch(
+            batch._rows,
+            self.dataset.schema,
             terminated=batch.terminated[:, 0],
             truncated=batch.truncated[:, 0],
+            mask=batch.mask[:, 0],
+            _squeeze=True,
         )
 
     def __iter__(self) -> Iterator[Batch]:

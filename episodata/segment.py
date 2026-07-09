@@ -4,32 +4,39 @@ A :class:`Segment` is a contiguous run of *transitions* — the only read
 product episodata has. Every field is named for its place in the transition,
 so there is no alignment convention to know:
 
-- ``observations`` / ``infos``: the observation each action was taken at;
-  for a window starting at the episode's beginning, ``observations[0]`` is
+- ``observation`` / ``info``: the observation each action was taken at;
+  for a window starting at the episode's beginning, ``observation[0]`` is
   the reset observation.
-- ``actions`` / ``rewards``: ``actions[i]`` is the action taken at
-  ``observations[i]``; ``rewards[i]`` is its reward.
-- ``next_observations`` / ``next_infos``: the observation each action
+- ``action`` / ``reward``: ``action[i]`` is the action taken at
+  ``observation[i]``; ``reward[i]`` is its reward.
+- ``next_observation`` / ``next_info``: the observation each action
   produced.
 - ``terminated`` / ``truncated`` / ``mask``: per-transition flags —
   ``terminated[i]`` is the done signal of transition ``i``.
 
+Each role accessor returns the bare ``[L, ...]`` array when the source was
+a bare array, or a :class:`Fields` view when it was a dict (see
+:func:`episodata.fields.role_view`). Singular, plural and the ``obs``
+shorthand are aliases for the same object: ``seg.observation`` ==
+``seg.obs`` == ``seg.observations``.
+
 A window of ``L`` transitions is backed by one buffer of ``L + 1`` storage
-rows; all of the above are zero-copy numpy views into it (``observations``
+rows; all of the above are zero-copy numpy views into it (``observation``
 is rows ``[:-1]``, everything else rows ``[1:]``), so e.g. pixel
-observations are never duplicated between ``observations`` and
-``next_observations``. A :class:`Batch` stacks segments along a leading
+observations are never duplicated between ``observation`` and
+``next_observation``. A :class:`Batch` stacks segments along a leading
 batch axis and re-derives the same views from a ``[B, L+1]`` buffer.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import cached_property
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .fields import Fields
+from .fields import Fields, role_view
 
 if TYPE_CHECKING:
     from .schema import DatasetSchema
@@ -39,16 +46,17 @@ if TYPE_CHECKING:
 _ROW_ROLES = ("observation", "info")
 
 
-class Segment(Fields):
+class Segment:
     """One unbatched segment of ``L`` transitions: field arrays shaped
     ``[L, ...]`` (or, for a single transition, no leading time dim).
 
-    Beyond the :class:`Fields` access patterns (flat keys, spaces, groups,
-    role views), a segment carries ``next_observations`` / ``next_infos``
-    and the per-transition flags ``terminated`` / ``truncated`` / ``mask``
-    (True on real transitions, False on the zero-padding of a segment drawn
-    from a too-short episode). See the module docstring for the transition
-    contract.
+    Access is strictly role-first: ``seg.observation`` / ``seg.obs`` /
+    ``seg.observations`` (aliases of one object), ``seg.action``,
+    ``seg.reward``, ``seg.info``, plus ``seg.next_observation`` /
+    ``seg.next_info`` and the per-transition flags ``terminated`` /
+    ``truncated`` / ``mask`` (True on real transitions, False on the
+    zero-padding of a segment drawn from a too-short episode). See the
+    module docstring for the transition contract.
 
     Returned by :meth:`Episode.segment` and :class:`SegmentDataset`; combine
     a list of these into a :class:`Batch` via
@@ -81,7 +89,8 @@ class Segment(Fields):
                 self._next[key] = shifted_view
             else:
                 data[key] = shifted_view
-        super().__init__(data, schema)
+        self._data = data
+        self._schema = schema
         self.terminated = terminated
         self.truncated = truncated
         self.mask = mask
@@ -90,14 +99,75 @@ class Segment(Fields):
         return arr[(slice(None),) * self._time_axis + (index,)]
 
     @property
-    def next_observations(self) -> Fields:
-        """Sub-view of the observation each transition's action produced."""
-        return Fields(self._next, self._schema).observations
+    def schema(self) -> "DatasetSchema":
+        return self._schema
+
+    # -- role accessors ------------------------------------------------------
+    # Cached so the aliases below hand back the identical object.
+
+    @cached_property
+    def observation(self) -> np.ndarray | Fields:
+        """The observation each transition's action was taken at."""
+        return role_view(self._data, self._schema, "observation")
+
+    @cached_property
+    def action(self) -> np.ndarray | Fields:
+        """The action of each transition."""
+        return role_view(self._data, self._schema, "action")
+
+    @cached_property
+    def reward(self) -> np.ndarray | Fields:
+        """The reward of each transition."""
+        return role_view(self._data, self._schema, "reward")
+
+    @cached_property
+    def info(self) -> np.ndarray | Fields:
+        """The info paired with each ``observation``."""
+        return role_view(self._data, self._schema, "info")
+
+    @cached_property
+    def next_observation(self) -> np.ndarray | Fields:
+        """The observation each transition's action produced."""
+        return role_view(self._next, self._schema, "observation")
+
+    @cached_property
+    def next_info(self) -> np.ndarray | Fields:
+        """The info paired with each ``next_observation``."""
+        return role_view(self._next, self._schema, "info")
+
+    # -- aliases -------------------------------------------------------------
 
     @property
-    def next_infos(self) -> Fields:
-        """Sub-view of the info paired with each ``next_observation``."""
-        return Fields(self._next, self._schema).infos
+    def obs(self):
+        return self.observation
+
+    @property
+    def observations(self):
+        return self.observation
+
+    @property
+    def actions(self):
+        return self.action
+
+    @property
+    def rewards(self):
+        return self.reward
+
+    @property
+    def infos(self):
+        return self.info
+
+    @property
+    def next_obs(self):
+        return self.next_observation
+
+    @property
+    def next_observations(self):
+        return self.next_observation
+
+    @property
+    def next_infos(self):
+        return self.next_info
 
     def select(self, fields: list[str]) -> "Segment":
         return type(self)(
@@ -109,6 +179,10 @@ class Segment(Fields):
             _squeeze=self._squeeze,
         )
 
+    def __repr__(self) -> str:
+        shapes = {k: tuple(v.shape) for k, v in self._data.items()}
+        return f"{type(self).__name__}({shapes})"
+
 
 class Batch(Segment):
     """A batch of segments: field arrays shaped ``[B, L, ...]``, with
@@ -118,8 +192,8 @@ class Batch(Segment):
 
     When the loader was configured with context/target segments, ``context``
     and ``target`` expose the corresponding transition slices; they share
-    one boundary row, so ``target.observations`` starts exactly where
-    ``context.next_observations`` ends.
+    one boundary row, so ``target.observation`` starts exactly where
+    ``context.next_observation`` ends.
     """
 
     _time_axis = 1
@@ -133,8 +207,17 @@ class Batch(Segment):
         terminated: np.ndarray | None = None,
         truncated: np.ndarray | None = None,
         mask: np.ndarray | None = None,
+        *,
+        _squeeze: bool = False,
     ):
-        super().__init__(rows, schema, terminated=terminated, truncated=truncated, mask=mask)
+        super().__init__(
+            rows,
+            schema,
+            terminated=terminated,
+            truncated=truncated,
+            mask=mask,
+            _squeeze=_squeeze,
+        )
         self._context_length = context_length
         self._target_length = target_length
 
@@ -147,6 +230,7 @@ class Batch(Segment):
             terminated=self.terminated,
             truncated=self.truncated,
             mask=self.mask,
+            _squeeze=self._squeeze,
         )
 
     @property

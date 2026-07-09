@@ -44,36 +44,41 @@ dataset = Dataset.from_episodes(episodes, path="my_dataset")
 dataset = Dataset.open("my_dataset")
 ```
 
-### Fields: flat storage, schema-driven structure
+### Fields: flat storage, role-first access
 
-Observations, actions and rewards are all *fields* — named arrays grouped
-into *spaces* (shared shape/dtype). The hierarchy comes from the schema,
-not from nesting in storage. Every read returns a `Segment` of
+Observations, actions and rewards are all *fields* — flat named arrays;
+structure is rebuilt at the access layer. Every read returns a `Segment` of
 *transitions*: each entry pairs the observation an action was taken at with
 that action, its reward, and the observation it produced — the names say
-what pairs with what, so there is no alignment convention to learn:
+what pairs with what, so there is no alignment convention to learn.
+
+Access is strictly hierarchical: role first, then field. A role holding one
+bare array (a non-dict source, as a plain Box action or observation
+produces) resolves straight to that array; anything dict-shaped is a view:
 
 ```python
 seg = dataset.episode(0).segment(0, 8)   # transitions [0, 8)
-seg["front_camera"]         # [8, ...] the obs each action was taken at
-seg.next_observations       # ... and the obs each action produced
-seg.action, seg.reward      # [8, ...] bare action/reward arrays resolve directly
-seg.terminated              # [8] done flag of each transition
+seg.observation.front_camera   # [8, ...] the obs each action was taken at
+seg.next_observation.front_camera  # ... and the obs each action produced
+seg.action, seg.reward         # [8, ...] bare arrays resolve directly
+seg.terminated                 # [8] done flag of each transition
 
-seg.image.front_camera      # space access
-seg.image.stacked()         # same-space fields stack safely
-for key, value in seg.image.items(): ...
-
-seg.observations            # role views: observation-role fields only
-seg.actions, seg.rewards    # ... action / reward roles, always collections
+seg.obs.space("image").front_camera   # explicit space access
+seg.obs.space("image").stacked()      # same-space fields stack safely
+for key, value in seg.obs.items(): ...
 ```
 
-`seg.observations[k]`, `seg.next_observations[k]` and the action/reward
-arrays are zero-copy views into one shared row buffer — pixel observations
-are never duplicated. Lengths always count env steps: an episode that took
-`T` `env.step` calls has `episode.length == T` and reads as `T` transitions,
-with the reset observation surfacing as `observations[0]` of a segment
-starting at 0.
+Singular, plural and the `obs` shorthand are aliases for the same object:
+`seg.observation` == `seg.obs` == `seg.observations`, and likewise
+`seg.next_obs`, `seg.actions`, `seg.rewards`, `seg.infos`. There are no
+other shortcuts — spaces are reached only through `.space(key)`, and fields
+only through their role.
+
+`seg.obs[k]`, `seg.next_obs[k]` and the action/reward arrays are zero-copy
+views into one shared row buffer — pixel observations are never duplicated.
+Lengths always count env steps: an episode that took `T` `env.step` calls
+has `episode.length == T` and reads as `T` transitions, with the reset
+observation surfacing as `seg.obs[k][0]` of a segment starting at 0.
 
 ### Hierarchical fields (complex actions and observations)
 
@@ -90,27 +95,18 @@ episode = {
 }
 dataset = Dataset.from_episodes([episode])
 
-obs = dataset.episode(0).read()
-obs["keyboard/w"]                  # flat access always works
-obs.keyboard.w                     # group access
-obs.inventory.items()              # iterate a group
+seg = dataset.episode(0).read()
+seg.action["keyboard/w"]           # flat path keys always work under a role
+seg.action.keyboard.w              # group access
+seg.obs.inventory.items()          # iterate a group
 
 dataset.segment_stream(fields=["pov", "keyboard"])   # a prefix selects the subtree
-transitions.actions.keyboard.w               # groups work everywhere
+transitions.action.keyboard.w                # groups work everywhere
 ```
 
-Name resolution order for attributes and keys: role view, space, group,
-field. A *trivial* space — one whose only field carries the space's own
-name, as inference produces for a bare action or reward array — resolves
-straight to that field's array (`seg.action`, `seg.reward`), not to a
-one-entry view; `seg.space_view("action")` returns the view regardless of
-field count.
-
-Singular vs plural: singular names resolve to data, while the plural role
-views (`observations`, `actions`, `rewards`, `infos`) are collections by
-contract — always a `Fields` sub-view, even when the role holds a single
-field. `seg.action` is the action data; `seg.actions` is the set of
-action-role fields.
+Within a role view a name is an exact field or a group prefix — nothing
+else. Method names (`space`, `schema`, `keys`/`items`/`values`/`get`) win
+attribute lookup over a same-named field; brackets always reach the field.
 
 ### Schema: automatic, declared, or hybrid
 
@@ -138,16 +134,16 @@ stream = dataset.segment_stream(
     seed=0,
 )
 batch = stream.sample()             # arrays [B, L, ...]
-batch.context, batch.target         # time-sliced views; target.observations
-                                    # starts where context.next_observations ends
+batch.context, batch.target         # time-sliced views; target.observation
+                                    # starts where context.next_observation ends
 batch.terminated                    # [B, L] done flags
 
 # Sequential scan (evaluation, statistics)
 for batch in dataset.segment_stream(sequence_length=32, shuffle=False): ...
 
-# Transitions for control
+# Transitions for control: a time-squeezed batch, arrays [B, ...]
 t = dataset.sample_transitions(batch_size=256)
-t.observations, t.actions, t.rewards, t.next_observations, t.terminated
+t.obs, t.action, t.reward, t.next_obs, t.terminated
 
 # Filtering
 dataset.segment_stream(sequence_length=8, filter=lambda ep: ep.terminated)

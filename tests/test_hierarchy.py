@@ -51,16 +51,16 @@ def test_group_access(backend_name, dataset_path):
     dataset = Dataset.from_episodes(
         [minecraft_episode()], path=dataset_path, backend=backend_name
     )
-    obs = dataset.episode(0).read()
-    assert np.array_equal(obs.keyboard.w, np.ones(8))
-    assert np.array_equal(obs["keyboard/w"], obs["keyboard"]["w"])
-    assert set(obs.keyboard) == {"w", "jump"}
-    assert set(dict(obs.inventory.items())) == {"stone", "wood"}
+    seg = dataset.episode(0).read()
+    assert np.array_equal(seg.action.keyboard.w, np.ones(8))
+    assert np.array_equal(seg.action["keyboard/w"], seg.action["keyboard"]["w"])
+    assert set(seg.action.keyboard) == {"w", "jump"}
+    assert set(dict(seg.obs.inventory.items())) == {"stone", "wood"}
     # observations pair the obs each action was taken at: reset obs first
-    assert np.array_equal(obs.inventory.stone, np.arange(8))
-    assert np.array_equal(obs.next_observations["inventory/stone"], np.arange(1, 9))
+    assert np.array_equal(seg.obs.inventory.stone, np.arange(8))
+    assert np.array_equal(seg.next_obs["inventory/stone"], np.arange(1, 9))
     with pytest.raises(AttributeError, match="keyboard"):
-        _ = obs.keyboard.missing
+        _ = seg.action.keyboard.missing
 
 
 def test_prefix_field_selection(backend_name, dataset_path):
@@ -71,8 +71,9 @@ def test_prefix_field_selection(backend_name, dataset_path):
         fields=["pov", "keyboard"], sequence_length=3, batch_size=2, seed=0
     )
     batch = stream.sample()
-    assert set(batch.keys()) == {"pov", "keyboard/w", "keyboard/jump"}
-    assert batch.keyboard.w.shape == (2, 3)
+    assert set(batch.obs) == {"pov"}
+    assert set(batch.action) == {"keyboard/w", "keyboard/jump"}
+    assert batch.action.keyboard.w.shape == (2, 3)
 
 
 def test_transitions_group_access():
@@ -108,6 +109,6 @@ def test_nested_online_append(backend_name, dataset_path):
     episode = dataset.episode(writer.episode_id)
     assert len(episode) == 1 and episode.terminated
     data = episode.read()
-    assert np.array_equal(data["keyboard/w"], [1])
-    assert np.array_equal(data["inventory/stone"], [0])
-    assert np.array_equal(data.next_observations["inventory/stone"], [1])
+    assert np.array_equal(data.action["keyboard/w"], [1])
+    assert np.array_equal(data.obs["inventory/stone"], [0])
+    assert np.array_equal(data.next_obs["inventory/stone"], [1])

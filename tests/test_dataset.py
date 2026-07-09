@@ -18,15 +18,15 @@ def test_segment_matches_source(dataset):
     segment = dataset.episode(0).segment(2, 6, fields=["front_camera", "reward"])
     # transition t pairs the obs the action was taken at (source obs t - 1)
     # with the action/reward of step t and the obs it produced (source obs t)
-    assert np.array_equal(segment["front_camera"], source["observations"]["front_camera"][1:5])
+    assert np.array_equal(segment.obs["front_camera"], source["observations"]["front_camera"][1:5])
     assert np.array_equal(
-        segment.next_observations["front_camera"], source["observations"]["front_camera"][2:6]
+        segment.next_obs["front_camera"], source["observations"]["front_camera"][2:6]
     )
-    assert np.array_equal(segment["reward"], source["rewards"][2:6])
+    assert np.array_equal(segment.reward, source["rewards"][2:6])
     step = dataset.episode(0).step(-1)
-    assert np.array_equal(step["state"], source["observations"]["state"][-2])
-    assert np.array_equal(step.next_observations["state"], source["observations"]["state"][-1])
-    assert np.array_equal(step["action"], source["actions"]["action"][-1])
+    assert np.array_equal(step.obs["state"], source["observations"]["state"][-2])
+    assert np.array_equal(step.next_obs["state"], source["observations"]["state"][-1])
+    assert np.array_equal(step.action, source["actions"]["action"][-1])
 
 
 def test_persistence_roundtrip(tmp_path):
@@ -36,7 +36,7 @@ def test_persistence_roundtrip(tmp_path):
     assert reopened.schema.to_dict() == original.schema.to_dict()
     assert reopened.num_episodes == 1
     assert np.array_equal(
-        reopened.episode(0).read()["state"], original.episode(0).read()["state"]
+        reopened.episode(0).read().obs["state"], original.episode(0).read().obs["state"]
     )
 
 
@@ -46,8 +46,8 @@ def test_schema_not_reinferred_on_open(tmp_path):
     dataset.rename_space("vector", "proprio")
     reopened = Dataset.open(path)
     assert "proprio" in reopened.schema.spaces
-    obs = reopened.episode(0).segment(0, 2)
-    assert obs.proprio.state.shape == (2, 5)
+    seg = reopened.episode(0).segment(0, 2)
+    assert seg.obs.space("proprio").state.shape == (2, 5)
 
 
 def test_online_append(backend_name, dataset_path):
@@ -77,7 +77,7 @@ def test_online_append(backend_name, dataset_path):
         )
     assert episode.ongoing and len(episode) == 5
     # ongoing episodes are readable
-    assert np.array_equal(episode.segment(1, 3)["reward"], [1.0, 2.0])
+    assert np.array_equal(episode.segment(1, 3).reward, [1.0, 2.0])
 
     writer.end(terminated=True)
     assert not episode.ongoing and episode.terminated
@@ -111,10 +111,10 @@ def test_new_episode_writes_reset_row(dataset):
     assert len(dataset.episode(writer.episode_id)) == 0
     writer.add_step(_step(1.0))
     row = dataset.episode(writer.episode_id).step(0)
-    assert np.array_equal(row["state"], np.ones(5, dtype=np.float32))  # reset obs
-    assert np.array_equal(row.next_observations["state"], np.zeros(5, dtype=np.float32))
-    assert np.array_equal(row["action"], np.zeros(2, dtype=np.float32))
-    assert row["reward"] == 1.0
+    assert np.array_equal(row.obs["state"], np.ones(5, dtype=np.float32))  # reset obs
+    assert np.array_equal(row.next_obs["state"], np.zeros(5, dtype=np.float32))
+    assert np.array_equal(row.action, np.zeros(2, dtype=np.float32))
+    assert row.reward == 1.0
     # infos accompany the reset observation, never stand alone
     with pytest.raises(ValueError, match="observations"):
         dataset.new_episode(infos={"success": False})
@@ -162,7 +162,7 @@ def test_resume_episode(dataset):
     writer.add_step(_step(1.0))
     # ... or via the episode view
     dataset.episode(episode_id).writer().add_step(_step(2.0))
-    assert np.array_equal(dataset.episode(episode_id).read()["reward"], [1.0, 2.0])
+    assert np.array_equal(dataset.episode(episode_id).read().reward, [1.0, 2.0])
 
     writer.end(terminated=True)
     with pytest.raises(ValueError, match="finalized"):
@@ -186,7 +186,7 @@ def test_direct_id_based_append(dataset):
     )
     episode = dataset.end_episode(episode_id, terminated=True)
     assert episode.terminated and len(episode) == 3
-    assert np.array_equal(episode.read()["reward"], [1.0, 2.0, 3.0])
+    assert np.array_equal(episode.read().reward, [1.0, 2.0, 3.0])
 
     with pytest.raises(ValueError, match="finalized"):
         dataset.add_step(episode_id, _step())
@@ -207,7 +207,7 @@ def test_resume_after_reopen(tmp_path):
     writer.add_step(_step(9.0))
     episode = writer.end(terminated=True)
     assert len(episode) == 4 and episode.terminated
-    assert episode.read()["reward"][-1] == 9.0
+    assert episode.read().reward[-1] == 9.0
 
 
 def test_append_validation(dataset):
@@ -240,7 +240,7 @@ def test_ongoing_episode_survives_reopen(tmp_path):
     assert episode.ongoing and len(episode) == 3
     source = make_steps(3, seed=7)
     assert np.array_equal(
-        episode.read().next_observations["state"], source["observations"]["state"]
+        episode.read().next_obs["state"], source["observations"]["state"]
     )
 
 
@@ -250,4 +250,4 @@ def test_declared_schema_mode(backend_name, dataset_path):
     dataset = Dataset.from_episodes(
         [make_episode(5)], schema=schema, path=dataset_path, backend=backend_name
     )
-    assert dataset.episode(0).segment(0, 2).proprio.state.shape == (2, 5)
+    assert dataset.episode(0).segment(0, 2).obs.space("proprio").state.shape == (2, 5)

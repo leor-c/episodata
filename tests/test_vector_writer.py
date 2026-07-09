@@ -63,8 +63,9 @@ def assert_episodes_equal(actual, expected):
     assert actual.terminated == expected.terminated
     assert actual.truncated == expected.truncated
     a, b = actual.read(), expected.read()
-    for key in ("state", "action", "reward"):
-        assert np.array_equal(a[key], b[key]), key
+    assert np.array_equal(a.obs["state"], b.obs["state"])
+    assert np.array_equal(a.action, b.action)
+    assert np.array_equal(a.reward, b.reward)
 
 
 def test_matches_sequential_reference(backend_name, tmp_path):
@@ -128,9 +129,9 @@ def test_staggered_autoreset_writes_reset_rows(backend_name, tmp_path):
     vec.step(obs(3, 103), actions=act(3, 103), rewards=rew(3, 103))
     assert len(fresh) == 1
     row = fresh.step(0)
-    assert np.array_equal(row["state"], np.full(3, 2, dtype=np.float32))
-    assert np.array_equal(row["action"], np.full(2, 3, dtype=np.float32))
-    assert row["reward"] == 3.0
+    assert np.array_equal(row.obs["state"], np.full(3, 2, dtype=np.float32))
+    assert np.array_equal(row.action, np.full(2, 3, dtype=np.float32))
+    assert row.reward == 3.0
     # env 1 never ended: one ongoing episode of length 3
     assert len(dataset.episode(vec.episode_ids[1])) == 3
 
@@ -179,12 +180,12 @@ def test_infos_batched(backend_name, tmp_path):
     )
     # env 0: one episode; infos pair with observations, reset info first
     ep0 = dataset.episode(vec.episode_ids[0]).read()
-    assert np.array_equal(ep0["success"], [False, False, True])
-    assert np.array_equal(ep0.next_infos["success"], [False, True, False])
+    assert np.array_equal(ep0.info["success"], [False, False, True])
+    assert np.array_equal(ep0.next_info["success"], [False, True, False])
     # env 1's second episode starts with the reset-row info from the t=2 call
     fresh = dataset.episode(vec.episode_ids[1]).read()
-    assert np.array_equal(fresh["success"], [False])
-    assert np.array_equal(fresh.next_infos["success"], [True])
+    assert np.array_equal(fresh.info["success"], [False])
+    assert np.array_equal(fresh.next_info["success"], [True])
 
 
 def test_terminated_and_truncated_same_step(backend_name, tmp_path):
@@ -212,8 +213,8 @@ def test_bare_array_observations():
         rewards=np.zeros(2, dtype=np.float32),
     )
     data = dataset.episode(vec.episode_ids[0]).read()
-    assert np.array_equal(data["observation"], [[1, 1, 1]])
-    assert np.array_equal(data.next_observations["observation"], [[2, 2, 2]])
+    assert np.array_equal(data.obs, [[1, 1, 1]])
+    assert np.array_equal(data.next_obs, [[2, 2, 2]])
 
 
 def test_close_truncates(backend_name, tmp_path):
@@ -277,7 +278,7 @@ def test_reset_midrun_truncates(backend_name, tmp_path):
     assert all(dataset.episode(eid).ongoing for eid in vec.episode_ids)
     vec.step(obs(51, 151), actions=act(51, 151), rewards=rew(51, 151))
     assert np.array_equal(
-        dataset.episode(vec.episode_ids[0]).step(0)["state"],
+        dataset.episode(vec.episode_ids[0]).step(0).obs["state"],
         np.full(3, 50, dtype=np.float32),
     )
 

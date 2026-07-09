@@ -35,34 +35,21 @@ Optionally, also info (as in Gym interface).
 
 Observations, actions, rewards and infos are structurally the same thing: schema-backed collections of named fields. One generic container (`Fields`) serves all of them; the *role* of a field (observation / action / reward / info) is schema metadata, not a separate container type.
 
-Fields are grouped into **spaces**:
+Access is strictly role-first — a segment exposes one `Fields` view per role, and a role holding a single bare array unwraps straight to it:
 
 ```python
-fields.image.front
-fields.image.wrist
-fields.proprio.state
+seg.observation.front      # role → field; .obs / .observations are aliases
+seg.obs["front"]           # dictionary-style access on the role view
+seg.action                 # bare array when the source was a bare array
 ```
 
-Equivalent dictionary-style access should always be available:
+Fields sharing a logical format are grouped into **spaces**, reached only through the explicit `space()` method:
 
 ```python
-fields["front"]
-fields.image["front"]
-```
-
-Iteration over a space is supported:
-
-```python
-for key, value in fields.image.items():
+seg.obs.space("image").front
+seg.obs.space("image").stacked()
+for key, value in seg.obs.space("image").items():
     ...
-```
-
-Role-based sub-views select by schema role:
-
-```python
-fields.observations    # observation-role fields only
-fields.actions
-fields.rewards
 ```
 
 The internal representation may remain flat. The hierarchy is reconstructed from the schema.
@@ -221,7 +208,7 @@ The high-level layer is responsible for:
 The storage backend does not need to implement Python access such as:
 
 ```python
-obs.image.front
+seg.obs.space("image").front
 ```
 
 ---
@@ -386,10 +373,10 @@ The implementation layers modules so that each depends only on the ones above it
 | Module | Layer | Contents |
 |---|---|---|
 | `schema.py` | logical spec | `SpaceSpec`, `FieldSpec`, `DatasetSchema` — serializable, authoritative, no array data |
-| `fields.py` | generic field views | `Fields` (flat named arrays + space/group/role access), `SpaceView`, `FieldGroup` |
+| `fields.py` | generic field views | `Fields` (one role's flat named arrays + field/group/space access), `SpaceView`, `FieldGroup` |
 | `segment.py` | temporal containers | `Segment` (fields + per-step flags), `Batch` (leading batch dim, context/target slicing) |
 | `episode.py` | trajectory views | `Episode` (lazy read view), `EpisodeWriter` (online append handle) |
-| `sampling.py` | query & sampling | `SegmentStream` (stream), `SegmentDataset` (map-style), `TransitionBatch`, `SegmentIndex` |
+| `sampling.py` | query & sampling | `SegmentStream` (stream), `SegmentDataset` (map-style), `SegmentIndex` |
 | `dataset.py` | entry point | `Dataset` — ties schema, backend, episodes and queries together |
 | `backends/` | storage | `StorageBackend` contract; `memory`, `npz_directory` |
 | `normalize.py` | write boundary | canonical episode/step dicts, `/`-path flattening, alignment shifts |
@@ -429,7 +416,7 @@ class Dataset:
     def segments(self, fields=None, sequence_length=None, context_length=None,
                  target_length=None, filter=None, pad="suffix") -> SegmentDataset
     def sample_transitions(self, batch_size, fields=None, seed=None,
-                           filter=None) -> TransitionBatch
+                           filter=None) -> Batch    # time-squeezed, arrays [B, ...]
 
     def rename_space(self, old: str, new: str) -> None
 ```
@@ -457,21 +444,25 @@ class EpisodeWriter:            # stateless handle, keyed by episode_id
 **Fields / Segment / Batch** — the container hierarchy:
 
 ```python
-class Fields(Mapping):
+class Fields(Mapping):            # one role's fields, handed out by a Segment
     fields["front_camera"]        # flat field access (also "keyboard/w" paths)
-    fields.image.front_camera     # space attribute access -> SpaceView
+    fields.front_camera           # field attribute access
     fields.keyboard.w             # group attribute access -> FieldGroup
-    observations: Fields          # role views (schema-driven)
-    actions: Fields
-    rewards: Fields
-    infos: Fields
+    def space(self, key) -> SpaceView   # explicit space access
     schema: DatasetSchema
-    def select(self, fields: list[str]) -> Fields
 
-class Segment(Fields):            # arrays [L, ...] (or unbatched single step)
+class Segment:                    # arrays [L, ...] (or unbatched single step)
+    observation: np.ndarray | Fields    # aliases: obs, observations; a role
+    action: np.ndarray | Fields         # holding one bare array unwraps to it
+    reward: np.ndarray | Fields         # aliases: actions, rewards, info(s),
+    info: np.ndarray | Fields           # next_obs, next_observation(s), ...
+    next_observation: np.ndarray | Fields
+    next_info: np.ndarray | Fields
     terminated: np.ndarray        # True only on a terminal final step
     truncated: np.ndarray
     mask: np.ndarray              # True on real steps, False on padding
+    schema: DatasetSchema
+    def select(self, fields: list[str]) -> Segment
 
 class Batch(Segment):             # arrays [B, L, ...], flags [B, L]
     context: Batch                # time slices when configured with
@@ -492,17 +483,8 @@ class SegmentDataset:             # map-style; torch DataLoader-compatible
 class SegmentStream:              # infinite shuffled stream / sequential scan
     segments: SegmentDataset      # refreshed on every sample()
     def sample(self) -> Batch
-    def sample_transitions(self) -> TransitionBatch
-    def __iter__(self) -> Iterator[Batch]
-
-@dataclass
-class TransitionBatch:            # alignment-free (s, a, r, s', done)
-    observations: Fields
-    actions: Fields
-    rewards: np.ndarray | None
-    next_observations: Fields
-    terminated: np.ndarray
-    truncated: np.ndarray
+    def sample_transitions(self) -> Batch   # time-squeezed: t.obs, t.action,
+    def __iter__(self) -> Iterator[Batch]   # t.reward, t.next_obs — all [B, ...]
 ```
 
 **Schema** — the persistent logical spec:

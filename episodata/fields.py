@@ -2,10 +2,11 @@
 
 Observations, actions, rewards and infos are all the same thing
 structurally: named arrays with hierarchical access. :class:`Fields` is the
-generic container — flat storage, with spaces (from the schema) and groups
-(from ``/`` in field keys) reconstructed on access. Arrays may carry
-arbitrary leading dims (single step, ``[T, ...]`` segment, or ``[B, T, ...]``
-batch) — the grouping logic is the same.
+generic container — flat storage, with groups (from ``/`` in field keys)
+reconstructed on access and spaces (from the schema) reached explicitly via
+:meth:`Fields.space`. Arrays may carry arbitrary leading dims (single step,
+``[T, ...]`` segment, or ``[B, T, ...]`` batch) — the grouping logic is the
+same.
 """
 
 from __future__ import annotations
@@ -116,44 +117,27 @@ class FieldGroup(Mapping):
 
 
 class Fields(Mapping):
-    """Flat named arrays with schema-driven space, group and role access.
+    """Flat named arrays of one role, with field, group and space access.
 
-    Access patterns::
+    Segments hand one of these out per role (``seg.observation``,
+    ``seg.action``, ...). Access is explicit — a name is a field or a group,
+    nothing else::
 
-        fields["front_camera"]          # flat field access
-        fields.image.front_camera       # space attribute access
-        fields.image["front_camera"]
-        for key, value in fields.image.items(): ...
+        obs["front_camera"]           # flat field access
+        obs.front_camera              # field attribute access
+        obs["inventory/stone"]        # flat path keys always work
+        obs.inventory.stone           # group attribute access
+        for key, value in obs.inventory.items(): ...
 
-    Fields with path keys (``"keyboard/w"``) additionally form groups::
+    Spaces (schema-level shared shape/dtype groups) are reached only through
+    the explicit :meth:`space` method, never by attribute name::
 
-        fields["keyboard/w"]            # flat access always works
-        fields.keyboard.w               # group attribute access
-        for key, value in fields.keyboard.items(): ...
+        obs.space("image").front_camera
+        obs.space("image").stacked()
 
-    Schema roles give semantic sub-views holding just the fields of one
-    role::
-
-        fields.observations             # observation-role fields
-        fields.actions                  # action-role fields
-        fields.rewards                  # reward-role fields
-
-    Name resolution order for attributes and keys: role view, space, group,
-    field. One refinement: a *trivial* space — one whose only present field
-    carries the space's own name, as inference produces for a bare action or
-    reward array — resolves straight to that field's array rather than a
-    one-entry :class:`SpaceView`::
-
-        fields.action                   # the [T, ...] array, not a view
-        fields.space_view("action")     # the SpaceView, if you insist
-
-    :meth:`space_view` always returns the view, whatever the field count.
-
-    Singular vs plural: singular names resolve to data, while the plural
-    role views (``observations``, ``actions``, ``rewards``, ``infos``) are
-    collections by contract — always a :class:`Fields` sub-view, even when
-    the role holds a single field. ``fields.action`` is the action data;
-    ``fields.actions`` is the set of action-role fields.
+    Method names (``space``, ``schema``, and the Mapping methods ``keys`` /
+    ``items`` / ``values`` / ``get``) win attribute lookup over a same-named
+    field; brackets always reach the field.
     """
 
     def __init__(self, data: Mapping[str, np.ndarray], schema: "DatasetSchema"):
@@ -165,21 +149,14 @@ class Fields(Mapping):
         return self._schema
 
     def _resolve(self, name: str):
-        """Single source of truth for name resolution: space, group, field."""
-        if name in self._schema.spaces:
-            return self._space_view(name)
-        if self._is_group(name):
-            return FieldGroup(name, self._data, self._schema)
+        """Single source of truth for name resolution: field, then group."""
         if name in self._data:
             return self._data[name]
+        if self._is_group(name):
+            return FieldGroup(name, self._data, self._schema)
         raise KeyError(name)
 
     def __getitem__(self, key: str) -> np.ndarray:
-        # The one deliberate divergence from _resolve: brackets are flat
-        # field access first, so seg["action"] reads the field even when a
-        # same-named space shadows it for attributes.
-        if key in self._data:
-            return self._data[key]
         return self._resolve(key)
 
     def __getattr__(self, name: str):
@@ -189,34 +166,26 @@ class Fields(Mapping):
             return self._resolve(name)
         except KeyError:
             raise AttributeError(
-                f"no field, group or space named {name!r}; fields: "
-                f"{list(self._data)}, spaces: {list(self._schema.spaces)}"
+                f"no field or group named {name!r}; fields: {list(self._data)}"
             ) from None
 
     def _is_group(self, name: str) -> bool:
         head = f"{name}{SEP}"
         return any(k.startswith(head) for k in self._data)
 
-    def space_view(self, space_key: str) -> SpaceView:
-        """The :class:`SpaceView` of a space, regardless of field count.
+    def space(self, space_key: str) -> SpaceView:
+        """The :class:`SpaceView` of a space's fields present here.
 
-        Unlike attribute/key access — which unwraps a trivial space (one
-        whose only present field carries the space's own name) straight to
-        its array — this always returns the view, so structural code keeps a
-        stable type as the schema evolves.
+        Raises ``KeyError`` for a space key the schema does not know, even
+        when no member field is present in this container.
         """
+        spec = self._schema.space(space_key)
         members = {
             k: self._data[k]
             for k in self._schema.fields_in_space(space_key)
             if k in self._data
         }
-        return SpaceView(self._schema.space(space_key), members)
-
-    def _space_view(self, space_key: str):
-        view = self.space_view(space_key)
-        if list(view) == [space_key]:
-            return view[space_key]
-        return view
+        return SpaceView(spec, members)
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._data)
@@ -224,41 +193,22 @@ class Fields(Mapping):
     def __len__(self) -> int:
         return len(self._data)
 
-    def select(self, fields: list[str]) -> "Fields":
-        return type(self)({k: self._data[k] for k in fields}, self._schema)
-
-    # -- role views ---------------------------------------------------------
-
-    def _role_view(self, role: str) -> "Fields":
-        return self.select(
-            [k for k in self._data if self._schema.fields[k].role == role]
-        )
-
-    @property
-    def observations(self) -> "Fields":
-        """Sub-view holding only the observation-role fields."""
-        return self._role_view("observation")
-
-    @property
-    def actions(self) -> "Fields":
-        """Sub-view holding only the action-role fields."""
-        return self._role_view("action")
-
-    @property
-    def rewards(self) -> "Fields":
-        """Sub-view holding only the reward-role fields."""
-        return self._role_view("reward")
-
-    @property
-    def infos(self) -> "Fields":
-        """Sub-view holding only the info-role fields."""
-        return self._role_view("info")
-
     def __repr__(self) -> str:
         shapes = {k: tuple(v.shape) for k, v in self._data.items()}
         return f"{type(self).__name__}({shapes})"
 
 
-#: Backward-compatible name: an observation is just fields, like everything
-#: else. Prefer :class:`Fields` in new code.
-Observation = Fields
+def role_view(
+    data: Mapping[str, np.ndarray], schema: "DatasetSchema", role: str
+) -> np.ndarray | Fields:
+    """Build the access object for one role's fields.
+
+    A role whose only present field carries the role's own name — the flat
+    key that normalization gives a bare (non-dict) source — unwraps straight
+    to that array; anything else (including an empty role) is a
+    :class:`Fields` view.
+    """
+    present = {k: v for k, v in data.items() if schema.fields[k].role == role}
+    if set(present) == {role}:
+        return present[role]
+    return Fields(present, schema)
