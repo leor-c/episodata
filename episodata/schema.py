@@ -34,7 +34,7 @@ class SpaceSpec:
     key: str
     shape: tuple[int, ...]
     dtype: str
-    role: str = "observation"
+    role: str
     low: float | None = None
     high: float | None = None
     layout: str | None = None
@@ -62,7 +62,7 @@ class SpaceSpec:
             key=d["key"],
             shape=tuple(d["shape"]),
             dtype=d["dtype"],
-            role=d.get("role", "observation"),
+            role=d["role"],
             low=d.get("low"),
             high=d.get("high"),
             layout=d.get("layout"),

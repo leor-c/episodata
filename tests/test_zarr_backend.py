@@ -141,7 +141,7 @@ def test_shard_bytes_packs_chunks(tmp_path):
 
 def test_missing_optional_field_raises_keyerror(tmp_path):
     schema = DatasetSchema(
-        spaces=[SpaceSpec("vec", (2,), "float32")],
+        spaces=[SpaceSpec("vec", (2,), "float32", "observation")],
         fields=[
             FieldSpec("a", "vec"),
             FieldSpec("b", "vec", optional=True),

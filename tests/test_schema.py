@@ -104,7 +104,7 @@ def test_json_roundtrip():
 def test_declared_schema_validates_references():
     with pytest.raises(ValueError, match="unknown space"):
         DatasetSchema(
-            spaces=[SpaceSpec(key="image", shape=(3, 8, 8), dtype="uint8")],
+            spaces=[SpaceSpec(key="image", shape=(3, 8, 8), dtype="uint8", role="observation")],
             fields=[FieldSpec(key="cam", space="nope")],
         )
 
@@ -112,17 +112,18 @@ def test_declared_schema_validates_references():
 def test_declared_schema_rejects_role_mismatch():
     with pytest.raises(ValueError, match="role"):
         DatasetSchema(
-            spaces=[SpaceSpec(key="vector", shape=(3,), dtype="float32")],
+            spaces=[SpaceSpec(key="vector", shape=(3,), dtype="float32", role="observation")],
             fields=[FieldSpec(key="debug", space="vector", role="info")],
         )
 
 
-def test_space_role_roundtrips_and_defaults():
+def test_space_role_roundtrips():
     schema = DatasetSchema.infer(make_episode(5))
     restored = DatasetSchema.from_json(schema.to_json())
     assert restored.space("action").role == "action"
-    # schemas persisted before spaces carried a role default to observation
-    assert SpaceSpec.from_dict({"key": "v", "shape": [3], "dtype": "float32"}).role == "observation"
+    # role is part of a space's identity — never defaulted, on load either
+    with pytest.raises(KeyError):
+        SpaceSpec.from_dict({"key": "v", "shape": [3], "dtype": "float32"})
 
 
 def test_rename_space_updates_fields():

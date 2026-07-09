@@ -162,7 +162,7 @@ class SegmentStream:              # infinite shuffled stream / sequential scan
 **Schema** — the persistent logical spec:
 
 ```python
-SpaceSpec(key, shape, dtype, role="observation", low=None, high=None, layout=None, metadata={})
+SpaceSpec(key, shape, dtype, role, low=None, high=None, layout=None, metadata={})
 FieldSpec(key, space, role="observation", semantic_type=None, optional=False, metadata={})
 # a space belongs to one role; each field's role must match its space's role
 
