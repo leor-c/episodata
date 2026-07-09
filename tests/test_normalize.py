@@ -4,7 +4,11 @@ and the reset-row synthesis they drive."""
 import numpy as np
 import pytest
 
-from episodata.normalize import normalize_action_out_episode, normalize_full_episode
+from episodata.normalize import (
+    normalize_action_out_episode,
+    normalize_full_episode,
+    resolve_alignment,
+)
 
 
 def action_in_episode(**extra):
@@ -113,6 +117,34 @@ def test_final_info_requires_final_observation():
     episode = action_out_episode(final_info={"success": np.array(True)})
     with pytest.raises(ValueError, match="final_observation"):
         normalize_action_out_episode(episode)
+
+
+def test_alignment_inferred_from_boundary_keys():
+    assert resolve_alignment(action_in_episode()) == "action_in"
+    final = {"x": np.array([3.0], dtype=np.float32)}
+    assert resolve_alignment(action_out_episode(final_observation=final)) == "action_out"
+    # initial_info / final_info alone carry the same signal
+    assert resolve_alignment({"initial_info": {}}) == "action_in"
+    assert resolve_alignment({"final_info": {}}) == "action_out"
+
+
+def test_alignment_without_any_boundary_key_requires_explicit():
+    with pytest.raises(ValueError, match="cannot determine alignment"):
+        resolve_alignment(action_out_episode())
+    # the one genuinely ambiguous case: action-out data missing its final obs
+    assert resolve_alignment(action_out_episode(), alignment="action_out") == "action_out"
+
+
+def test_alignment_contradictions_raise():
+    final = {"x": np.array([3.0], dtype=np.float32)}
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        resolve_alignment({**action_in_episode(), "final_observation": final})
+    with pytest.raises(ValueError, match="alignment='action_out'"):
+        resolve_alignment(action_in_episode(), alignment="action_out")
+    with pytest.raises(ValueError, match="alignment='action_in'"):
+        resolve_alignment(action_out_episode(final_observation=final), alignment="action_in")
+    with pytest.raises(ValueError, match="unknown alignment"):
+        resolve_alignment(action_in_episode(), alignment="sideways")
 
 
 def test_action_out_final_pairing_is_all_or_nothing():

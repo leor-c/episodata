@@ -54,7 +54,8 @@ convention to learn and no dummy values anywhere, in or out.
 
 `terminated` and `truncated` are separate signals, exactly as in Gymnasium.
 D4RL-style "action-out" data (action paired with the observation it was
-taken *at*) is converted once at the write boundary — see the README's
+taken *at*) is converted once at the write boundary, marked by a
+`final_observation` key instead of `initial_observation` — see the README's
 [Action-out data](../README.md#action-out-data) section — so everything
 downstream is shared.
 

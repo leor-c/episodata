@@ -102,6 +102,16 @@ def test_writer_and_bulk_import_agree():
         assert np.array_equal(a[key], b[key]), key
 
 
+def test_final_observation_alone_selects_action_out():
+    # no alignment argument: the boundary key is the signal
+    final = {"x": np.array([6.0], dtype=np.float32)}
+    dataset = Dataset.from_episodes([{**action_out_episode(), "final_observation": final}])
+    data = dataset.episode(0).read()
+    assert len(dataset.episode(0)) == 6  # nothing dropped
+    assert np.array_equal(data["action"][:, 0], [0, 10, 20, 30, 40, 50])
+    assert np.array_equal(data.next_observations["x"][:, 0], np.arange(1, 7))
+
+
 def test_writer_and_bulk_import_agree_with_final_observation():
     final = {"x": np.array([5.0], dtype=np.float32)}
     episode = {**action_out_episode(5), "final_observation": final}

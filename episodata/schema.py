@@ -206,25 +206,29 @@ class DatasetSchema:
     # -- inference (automatic mode) -----------------------------------------
 
     @classmethod
-    def infer(cls, example_episode: Mapping[str, Any], alignment: str = "action_in") -> DatasetSchema:
+    def infer(
+        cls, example_episode: Mapping[str, Any], alignment: str | None = None
+    ) -> DatasetSchema:
         """Infer a schema from one example episode (canonical episode dict).
 
         Shape and dtype are inferred reliably. Space keys are generated from
-        structural heuristics and can be renamed later (hybrid mode).
-        ``alignment`` must match what will be passed to
-        ``Dataset.add_episode``/``from_episodes`` for this example: the
-        default ``"action_in"`` requires ``initial_observation``;
-        ``"action_out"`` accepts an optional ``final_observation`` (see
-        ``normalize_full_episode`` / ``normalize_action_out_episode``).
+        structural heuristics and can be renamed later (hybrid mode). The
+        episode's alignment is read from its boundary keys
+        (``initial_observation`` marks action-in, ``final_observation``
+        action-out); ``alignment`` is only needed for action-out data
+        without its final observation (see ``resolve_alignment``).
         """
-        from .normalize import normalize_action_out_episode, normalize_full_episode
+        from .normalize import (
+            normalize_action_out_episode,
+            normalize_full_episode,
+            resolve_alignment,
+        )
 
+        alignment = resolve_alignment(example_episode, alignment)
         if alignment == "action_in":
             normalized = normalize_full_episode(example_episode)
-        elif alignment == "action_out":
-            normalized = normalize_action_out_episode(example_episode)
         else:
-            raise ValueError(f"unknown alignment {alignment!r}")
+            normalized = normalize_action_out_episode(example_episode)
         spaces: dict[str, SpaceSpec] = {}
         fields: list[FieldSpec] = []
         for key, array in normalized.fields.items():

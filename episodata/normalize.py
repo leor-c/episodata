@@ -165,6 +165,39 @@ def normalize_episode(episode: Mapping[str, Any]) -> NormalizedEpisode:
     )
 
 
+def resolve_alignment(episode: Mapping[str, Any], alignment: str | None = None) -> str:
+    """Determine a bulk-import episode dict's alignment from its boundary keys.
+
+    The dict is self-describing: ``initial_observation``/``initial_info``
+    mark action-in, ``final_observation``/``final_info`` mark action-out,
+    and carrying both is a contradiction. An explicit ``alignment`` is
+    validated against the keys; it is only *required* for action-out data
+    without its final observation, which carries no boundary key.
+    """
+    initial = [k for k in (_INITIAL_OBS_KEY, _INITIAL_INFO_KEY) if k in episode]
+    final = [k for k in (_FINAL_OBS_KEY, _FINAL_INFO_KEY) if k in episode]
+    if initial and final:
+        raise ValueError(
+            f"{initial[0]!r} (action-in) and {final[0]!r} (action-out) are mutually exclusive"
+        )
+    inferred = "action_in" if initial else "action_out" if final else None
+    if alignment is None:
+        if inferred is None:
+            raise ValueError(
+                f"cannot determine alignment: pass {_INITIAL_OBS_KEY!r} (action-in) or "
+                f"{_FINAL_OBS_KEY!r} (action-out), or alignment='action_out' for "
+                f"action-out data without its final observation"
+            )
+        return inferred
+    if alignment not in ("action_in", "action_out"):
+        raise ValueError(f"unknown alignment {alignment!r}")
+    if inferred is not None and inferred != alignment:
+        raise ValueError(
+            f"episode carries {(initial or final)[0]!r} but alignment={alignment!r} was passed"
+        )
+    return alignment
+
+
 def normalize_full_episode(episode: Mapping[str, Any]) -> NormalizedEpisode:
     """Convert a canonical whole-episode dict (bulk import) into a :class:`NormalizedEpisode`.
 

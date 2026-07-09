@@ -23,6 +23,7 @@ from .normalize import (
     normalize_episode,
     normalize_full_episode,
     normalize_step,
+    resolve_alignment,
 )
 from .schema import DatasetSchema
 from .vector import VectorWriter
@@ -59,14 +60,16 @@ class Dataset:
         schema: DatasetSchema | None = None,
         path: str | None = None,
         backend: str | None = None,
-        alignment: str = "action_in",
+        alignment: str | None = None,
         **backend_options: Any,
     ) -> "Dataset":
         """Build a dataset from canonical episode dicts.
 
         Without ``schema``, the schema is inferred from the first episode
         (automatic mode) and becomes authoritative once persisted.
-        ``alignment`` is forwarded to :meth:`add_episode`.
+        ``alignment`` is forwarded to :meth:`add_episode`; it is normally
+        omitted — the episode dicts are self-describing via their
+        ``initial_observation`` / ``final_observation`` keys.
         """
         episodes = iter(episodes)
         first = next(episodes, None)
@@ -116,25 +119,26 @@ class Dataset:
 
     # -- writes ----------------------------------------------------------------
 
-    def add_episode(self, episode: Mapping[str, Any], alignment: str = "action_in") -> Episode:
+    def add_episode(self, episode: Mapping[str, Any], alignment: str | None = None) -> Episode:
         """Add one complete episode from a canonical episode dict.
 
-        Every temporal field carries one entry per env step. Under the
-        default ``alignment="action_in"``, ``initial_observation`` (required)
-        is the reset observation and entry ``t`` holds the action that *led
-        to* observation ``t``; the reset row's dummy zero action/reward is
-        synthesized here, mirroring ``new_episode``.
-        ``alignment="action_out"`` instead accepts episodes where entry ``t``
-        holds the action taken *at* observation ``t`` (D4RL-style), with an
-        optional ``final_observation``; they are shifted to the canonical
-        action-in alignment at write time.
+        Every temporal field carries one entry per env step, and the dict is
+        self-describing: an ``initial_observation`` key (the reset
+        observation) marks action-in — entry ``t`` holds the action that
+        *led to* observation ``t``, and the reset row's dummy zero
+        action/reward is synthesized here, mirroring ``new_episode``. A
+        ``final_observation`` key marks action-out — entry ``t`` holds the
+        action taken *at* observation ``t`` (D4RL-style), shifted to the
+        canonical action-in alignment at write time. ``alignment`` is only
+        needed for action-out data without its final observation (which
+        carries no boundary key); when given, it is validated against the
+        keys.
         """
+        alignment = resolve_alignment(episode, alignment)
         if alignment == "action_in":
             normalized = normalize_full_episode(episode)
-        elif alignment == "action_out":
-            normalized = normalize_action_out_episode(episode)
         else:
-            raise ValueError(f"unknown alignment {alignment!r}")
+            normalized = normalize_action_out_episode(episode)
         episode_id = self.backend.create_episode()
         self._append_fields(episode_id, normalized.fields)
         return self.end_episode(

@@ -293,10 +293,12 @@ boundaries speak env steps, in Gymnasium's own vocabulary:
 
 - **Writes**: every temporal field carries one entry per step. Online,
   `new_episode` records the reset observation and each `add_step` one
-  `env.step`. In bulk, `initial_observation` (required for the default
-  `alignment="action_in"`) is the reset observation and
-  `observations`/`actions`/`rewards` are the `T` steps that followed —
-  `actions[t]` *led to* `observations[t]`.
+  `env.step`. In bulk, the episode dict is **self-describing** through its
+  boundary key: `initial_observation` (the reset observation) marks
+  action-in — `actions[t]` *led to* `observations[t]` — while
+  `final_observation` marks action-out; carrying both is an error. The
+  `alignment` argument is only needed for action-out data without its
+  final observation, which carries no key.
 - **Reads**: every read is a window of *transitions* with explicitly named,
   transition-aligned arrays — `observations` (where each action was taken),
   `actions`/`rewards`, `next_observations` (what each action produced), and
@@ -333,13 +335,14 @@ as the source meant it (`actions[i]` taken at `observations[i]`):
 from episodata import ActionOutWriter
 
 # bulk import: equal-length observations/actions/rewards, actions[t] taken
-# AT observations[t]; final_observation keeps the last transition
+# AT observations[t]. The final_observation key alone marks the episode as
+# action-out — no alignment argument needed
 episodes = [{
     "observations": obs, "actions": acts, "rewards": rews,
-    "final_observation": last_obs,   # optional, mirrors ActionOutWriter.end
+    "final_observation": last_obs,   # mirrors ActionOutWriter.end
     "terminated": True,
 }]
-dataset = Dataset.from_episodes(episodes, alignment="action_out")
+dataset = Dataset.from_episodes(episodes)
 
 # online collection: obs written immediately, action/reward held one step
 writer = ActionOutWriter(dataset.new_episode())
@@ -350,7 +353,12 @@ writer.end(terminated=True, final_observation=last_obs)
 The last action/reward of an action-out episode pair with an observation
 that was never recorded; pass `final_observation` (and `final_info`, if
 using infos) to keep them, or accept that they are dropped — no transition
-could use them anyway.
+could use them anyway. Data *without* a final observation carries no
+boundary key, so that one case states its alignment explicitly:
+
+```python
+dataset = Dataset.from_episodes(episodes, alignment="action_out")
+```
 
 ## Development
 
