@@ -94,6 +94,9 @@ storage — pick whichever reads best at each call site.
 
 ### Map-style: `segments()` + `DataLoader`
 
+These two subsections use `torch` for the `DataLoader` examples (`pip
+install torch`) — a demo-only dependency, not one of episodata's own.
+
 `dataset.segments(...)` is an indexable, map-style view over fixed-length
 segments — plain `len()` / `[i]`, so it plugs directly into
 `torch.utils.data.DataLoader` for `num_workers` read parallelism (each
