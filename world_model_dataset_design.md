@@ -417,9 +417,8 @@ class Dataset:
     def episodes(self) -> Iterator[Episode]
 
     def add_episode(self, episode, alignment="action_in") -> Episode
-    def new_episode(self, initial=None) -> EpisodeWriter
+    def new_episode(self, observations=None, infos=None) -> EpisodeWriter
     def resume_episode(self, episode_id: int) -> EpisodeWriter
-    def add_reset(self, episode_id, observations, infos=None) -> None
     def add_step(self, episode_id, step) -> None
     def add_steps(self, episode_id, steps) -> None
     def end_episode(self, episode_id, terminated=False, truncated=False) -> Episode
@@ -450,7 +449,6 @@ class Episode:
     def writer(self) -> EpisodeWriter
 
 class EpisodeWriter:            # stateless handle, keyed by episode_id
-    def add_reset(self, observations, infos=None) -> None
     def add_step(self, step) -> None       # True terminated/truncated finalizes
     def add_steps(self, steps) -> None     # leading time dim
     def end(self, terminated=False, truncated=False) -> Episode

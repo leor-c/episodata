@@ -159,16 +159,16 @@ for batch in loader: ...   # episodata.Batch, arrays [B, L, ...]
 
 ### Online episode append
 
-The write API mirrors the Gymnasium loop one-to-one: `add_reset` records
-what `env.reset()` returned, then each `add_step` records one `env.step`
-call — the action sent plus everything the env returned, including the
-separate `terminated` / `truncated` signals. A True signal finalizes the
-episode, exactly as it ends the Gymnasium episode:
+The write API mirrors the Gymnasium loop one-to-one: an episode begins at
+reset, so `new_episode` takes what `env.reset()` returned and writes the
+reset row (initial observation, dummy zero action/reward). Each `add_step`
+then records one `env.step` call — the action sent plus everything the env
+returned, including the separate `terminated` / `truncated` signals. A True
+signal finalizes the episode, exactly as it ends the Gymnasium episode:
 
 ```python
 obs, info = env.reset()
-writer = dataset.new_episode()
-writer.add_reset(obs, infos=info)            # dummy zero action/reward
+writer = dataset.new_episode(obs, infos=info)
 
 while True:
     obs, reward, terminated, truncated, info = env.step(action)
@@ -247,7 +247,7 @@ class MyBackend(StorageBackend):
 - All temporal fields of an episode share one length `T`, aligned
   **action-in**: row `t` holds the action and reward that *led to*
   observation `t`. Row 0 is the reset row — the initial observation with
-  dummy zero action/reward (`writer.add_reset(obs)`).
+  dummy zero action/reward (`dataset.new_episode(obs)`).
 - A transition is `(obs[t], action[t+1], reward[t+1], obs[t+1], done[t+1])`;
   `sample_transitions` does this pairing, so its `(s, a, r, s', done)`
   output is convention-free.

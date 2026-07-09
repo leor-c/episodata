@@ -127,15 +127,25 @@ class Dataset:
             episode_id, terminated=normalized.terminated, truncated=normalized.truncated
         )
 
-    def new_episode(self, initial: Mapping[str, Any] | None = None) -> EpisodeWriter:
+    def new_episode(
+        self,
+        observations: Mapping[str, Any] | Any = None,
+        infos: Mapping[str, Any] | None = None,
+    ) -> EpisodeWriter:
         """Start an ongoing episode for online appends.
 
-        ``initial`` may hold an initial step or segment (canonical dict form
-        with a leading time dimension).
+        An episode begins at reset: pass what ``env.reset()`` returned and
+        row 0 is written — the initial observation with dummy zero
+        action/reward. Under the action-in convention every subsequent
+        :meth:`add_step` then records exactly one ``env.step`` call. The
+        bare form starts an empty episode for flows that append complete
+        rows via :meth:`add_steps` (including a pre-zeroed reset row).
         """
+        if observations is None and infos is not None:
+            raise ValueError("new_episode: infos requires observations")
         writer = EpisodeWriter(self, self.backend.create_episode())
-        if initial is not None:
-            writer.add_steps(initial)
+        if observations is not None:
+            self._write_reset_row(writer.episode_id, observations, infos)
         return writer
 
     def resume_episode(self, episode_id: int) -> EpisodeWriter:
@@ -149,21 +159,16 @@ class Dataset:
             raise ValueError(f"episode {episode_id} is finalized")
         return EpisodeWriter(self, episode_id)
 
-    def add_reset(
+    def _write_reset_row(
         self,
         episode_id: int,
         observations: Mapping[str, Any] | Any,
         infos: Mapping[str, Any] | None = None,
     ) -> None:
-        """Write the reset row (row 0) of an episode: the initial observation
-        from ``env.reset()`` with dummy zero action/reward.
-
-        Under the action-in convention every subsequent :meth:`add_step` then
-        records exactly one ``env.step`` call — the action sent plus the
-        observation/reward it produced.
-        """
+        """Write the reset row (row 0): the initial observation from
+        ``env.reset()`` with dummy zero action/reward."""
         if self.backend.episode_length(episode_id) > 0:
-            raise ValueError("add_reset must write the first step of an episode")
+            raise ValueError("the reset row must be the first row of an episode")
         step: dict[str, Any] = {"observations": observations}
         if infos is not None:
             step["infos"] = infos

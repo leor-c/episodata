@@ -71,7 +71,7 @@ class ActionOutWriter:
         if self._started:
             self._writer.add_step(self._row(observations, infos))
         else:
-            self._writer.add_reset(observations, infos=infos)
+            self._writer._write_reset(observations, infos=infos)
             self._started = True
         self._pending_action = _first(step, _ACTION_KEYS)
         self._pending_reward = _first(step, _REWARD_KEYS)

@@ -38,10 +38,9 @@ if __name__ == "__main__":
     obs = episode.segment(0, 8, fields=["front_camera", "state", "action"])
     print("segment:", obs.image.front_camera.shape, obs.proprio.state.shape)
 
-    # Online append, mirroring the Gym loop: reset row first, then one
-    # row per env.step (the action sent plus what it produced).
-    writer = dataset.new_episode()
-    writer.add_reset(
+    # Online append, mirroring the Gym loop: the episode begins at reset,
+    # then one row per env.step (the action sent plus what it produced).
+    writer = dataset.new_episode(
         {
             "front_camera": np.zeros((3, 64, 64), dtype=np.uint8),
             "wrist_camera": np.zeros((3, 64, 64), dtype=np.uint8),

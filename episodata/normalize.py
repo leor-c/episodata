@@ -20,7 +20,7 @@ nesting in storage.
 
 Temporal alignment is "action-in": row ``t`` holds the action and reward
 that *led to* observation ``t``. Row 0 is the reset row — the initial
-observation with dummy zero action/reward (see ``Dataset.add_reset``).
+observation with dummy zero action/reward (see ``Dataset.new_episode``).
 Data recorded in the "action-out" convention (action taken *at* the row's
 observation) is converted with :func:`shift_action_out`.
 """

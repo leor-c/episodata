@@ -78,8 +78,7 @@ def test_transitions_group_access():
 def test_nested_online_append(backend_name, dataset_path):
     schema = DatasetSchema.infer(minecraft_episode())
     dataset = Dataset.create(schema, path=dataset_path, backend=backend_name)
-    writer = dataset.new_episode()
-    writer.add_reset(
+    writer = dataset.new_episode(
         {
             "pov": np.zeros((3, 16, 16), dtype=np.uint8),
             "inventory": {"stone": 0, "wood": 0},

@@ -92,21 +92,19 @@ def _reset_obs() -> dict:
     }
 
 
-def test_add_reset(dataset):
-    writer = dataset.new_episode()
-    writer.add_reset(_reset_obs())
+def test_new_episode_writes_reset_row(dataset):
+    writer = dataset.new_episode(_reset_obs())
     row = dataset.episode(writer.episode_id).step(0)
     assert np.array_equal(row["state"], np.ones(5, dtype=np.float32))
     assert np.array_equal(row["action"], np.zeros(2, dtype=np.float32))
     assert row["reward"] == 0.0
-    # the reset row must come first
-    with pytest.raises(ValueError, match="first step"):
-        writer.add_reset(_reset_obs())
+    # infos accompany the reset observation, never stand alone
+    with pytest.raises(ValueError, match="observations"):
+        dataset.new_episode(infos={"success": False})
 
 
 def test_gymnasium_style_step_signals(dataset):
-    writer = dataset.new_episode()
-    writer.add_reset(_reset_obs())
+    writer = dataset.new_episode(_reset_obs())
     writer.add_step({**_step(1.0), "terminated": False, "truncated": False})
     writer.add_step({**_step(2.0), "terminated": True, "truncated": False})
 
@@ -119,8 +117,7 @@ def test_gymnasium_style_step_signals(dataset):
 
 
 def test_truncated_step_signal(dataset):
-    writer = dataset.new_episode()
-    writer.add_reset(_reset_obs())
+    writer = dataset.new_episode(_reset_obs())
     writer.add_step({**_step(), "truncated": True})
     episode = dataset.episode(writer.episode_id)
     assert episode.truncated and not episode.terminated and not episode.ongoing
@@ -183,9 +180,9 @@ def test_direct_id_based_append(dataset):
 def test_resume_after_reopen(tmp_path):
     path = str(tmp_path / "ds")
     dataset = Dataset.from_episodes([make_episode(4)], path=path)
-    episode_id = dataset.new_episode(
-        initial=make_episode(3, seed=7, terminated=False)
-    ).episode_id
+    writer = dataset.new_episode()
+    writer.add_steps(make_episode(3, seed=7, terminated=False))
+    episode_id = writer.episode_id
     dataset.flush()
 
     reopened = Dataset.open(path)
@@ -217,7 +214,8 @@ def test_append_validation(dataset):
 def test_ongoing_episode_survives_reopen(tmp_path):
     path = str(tmp_path / "ds")
     dataset = Dataset.from_episodes([make_episode(4)], path=path)
-    writer = dataset.new_episode(initial=make_episode(3, seed=7, terminated=False))
+    writer = dataset.new_episode()
+    writer.add_steps(make_episode(3, seed=7, terminated=False))
     dataset.flush()
 
     reopened = Dataset.open(path)

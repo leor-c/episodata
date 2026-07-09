@@ -181,12 +181,13 @@ big = Dataset.open("my_dataset").copy_to("my_dataset_zarr", backend="zarr")
 
 ## Collecting data online, two ways
 
-The write API mirrors a Gymnasium rollout one call per `env.step`. The usual
-way is a writer, kept for the lifetime of the rollout:
+The write API mirrors a Gymnasium rollout one-to-one: `new_episode` records
+what `env.reset()` returned (the reset row: initial observation, dummy zero
+action/reward), then one `add_step` call per `env.step`. The usual way is a
+writer, kept for the lifetime of the rollout:
 
 ```python
-writer = dataset.new_episode()
-writer.add_reset(obs, infos=info)
+writer = dataset.new_episode(obs, infos=info)
 
 obs, reward, terminated, truncated, info = env.step(action)
 writer.add_step({
@@ -202,9 +203,8 @@ not carry a writer object around (e.g. across process boundaries), or want
 to append a whole segment in one call instead of step by step:
 
 ```python
-episode_id = dataset.new_episode().episode_id   # writer discarded; only the id is kept
+episode_id = dataset.new_episode(obs).episode_id  # writer discarded; only the id is kept
 
-dataset.add_reset(episode_id, obs)
 dataset.add_steps(episode_id, {                 # a whole segment, one call
     "observations": obs_segment, "actions": action_segment,
     "rewards": reward_segment, "terminated": terminated_segment,

@@ -129,14 +129,19 @@ class EpisodeWriter:
         self.episode_id = episode_id
         self._closed = False
 
-    def add_reset(
+    def _write_reset(
         self,
         observations: Mapping[str, Any] | Any,
         infos: Mapping[str, Any] | None = None,
     ) -> None:
-        """Write the reset row: initial observation, dummy zero action/reward."""
+        """Write the reset row: initial observation, dummy zero action/reward.
+
+        Normally written by ``Dataset.new_episode(obs, infos)``; this hook
+        exists for adapters that receive the reset observation only after
+        the writer was created (see ``ActionOutWriter``).
+        """
         self._check_open()
-        self._dataset.add_reset(self.episode_id, observations, infos=infos)
+        self._dataset._write_reset_row(self.episode_id, observations, infos=infos)
 
     def add_step(self, step: Mapping[str, Any]) -> None:
         """Append one step; leaf values carry no time dimension.

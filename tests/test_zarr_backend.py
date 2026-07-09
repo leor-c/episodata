@@ -53,7 +53,8 @@ def test_ongoing_episode_survives_flush_and_reopen(tmp_path):
     dataset, _ = make_dataset(tmp_path / "ds")
     first = make_episode(4, seed=2)
     first.pop("terminated")
-    writer = dataset.new_episode(first)
+    writer = dataset.new_episode()
+    writer.add_steps(first)
     dataset.flush()
 
     reopened = Dataset.open(str(tmp_path / "ds"))
@@ -77,7 +78,8 @@ def test_crash_recovery_resets_unspilled_episode(tmp_path):
     dataset, _ = make_dataset(tmp_path / "ds")
     steps = make_episode(4, seed=2)
     steps.pop("terminated")
-    writer = dataset.new_episode(steps)
+    writer = dataset.new_episode()
+    writer.add_steps(steps)
     dataset.flush()
 
     pending = tmp_path / "ds" / "pending" / f"ep_{writer.episode_id:06d}.npz"
@@ -96,8 +98,10 @@ def test_out_of_order_finalize_of_interleaved_episodes(tmp_path):
     a = make_episode(5, seed=4)
     b = make_episode(6, seed=5)
     a.pop("terminated"), b.pop("terminated")
-    writer_a = dataset.new_episode(a)
-    writer_b = dataset.new_episode(b)
+    writer_a = dataset.new_episode()
+    writer_a.add_steps(a)
+    writer_b = dataset.new_episode()
+    writer_b.add_steps(b)
     dataset.end_episode(writer_b.episode_id, truncated=True)  # b before a
     dataset.end_episode(writer_a.episode_id, terminated=True)
 
@@ -164,7 +168,8 @@ def test_copy_to_migrates_npz_to_zarr(tmp_path):
     source = Dataset.from_episodes(episodes, path=str(tmp_path / "npz"))
     ongoing = make_episode(4, seed=2)
     ongoing.pop("terminated")
-    writer = source.new_episode(ongoing)
+    writer = source.new_episode()
+    writer.add_steps(ongoing)
 
     copied = source.copy_to(path=str(tmp_path / "zarr"), backend="zarr")
     assert copied.backend.name == "zarr"
