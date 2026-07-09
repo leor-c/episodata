@@ -92,6 +92,67 @@ storage — pick whichever reads best at each call site.
 
 ## Sampling for training
 
+### Map-style: `segments()` + `DataLoader`
+
+`dataset.segments(...)` is an indexable, map-style view over fixed-length
+segments — plain `len()` / `[i]`, so it plugs directly into
+`torch.utils.data.DataLoader` for `num_workers` read parallelism (each
+worker decompresses its own share of episodes independently):
+
+```python
+from torch.utils.data import DataLoader
+
+segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=8)
+loader = DataLoader(
+    segments, batch_size=32, shuffle=True,
+    num_workers=4, collate_fn=segments.collate,
+)
+for batch in loader: ...   # episodata.Batch, arrays [B, L, ...]
+```
+
+`episodata` itself never imports torch — `segments[i]` returns a `Segment`
+and works standalone with no torch installed.
+
+### Custom samplers: prioritized replay
+
+`segments()` is a plain map-style dataset, so *any* `torch.utils.data.Sampler`
+works over it — `DataLoader`'s `sampler` argument replaces `shuffle` with
+your own draw order. Prioritization itself is entirely outside episodata:
+compute priorities however you like (TD-error, recency, ...) and hand
+`DataLoader` a `Sampler` that draws indices accordingly:
+
+```python
+from torch.utils.data import Sampler
+
+class PrioritizedSampler(Sampler):
+    """Draws segment indices with replacement, weighted by external priorities."""
+
+    def __init__(self, priorities, num_samples, seed=None):
+        self.priorities = np.asarray(priorities, dtype=np.float64)
+        self.num_samples = num_samples
+        self.rng = np.random.default_rng(seed)
+
+    def __iter__(self):
+        probs = self.priorities / self.priorities.sum()
+        return iter(self.rng.choice(len(self.priorities), size=self.num_samples, p=probs).tolist())
+
+    def __len__(self):
+        return self.num_samples
+
+sampler = PrioritizedSampler(priorities, num_samples=len(segments), seed=0)
+loader = DataLoader(segments, batch_size=32, sampler=sampler, collate_fn=segments.collate)
+```
+
+Recompute `priorities` and rebuild the sampler as often as your algorithm
+needs (each step, each epoch, ...) — episodata only supplies the indexable
+segments; how they're drawn is entirely up to the caller.
+
+### Streaming: `segment_stream()`
+
+For a simpler infinite, shuffled, single-process stream — no `DataLoader`
+needed — with optional `context` / `target` splitting for world-model
+training:
+
 ```python
 stream = dataset.segment_stream(
     fields=["front_camera", "state", "action"],
@@ -105,11 +166,6 @@ transitions = dataset.sample_transitions(batch_size=256)
 transitions.observations, transitions.actions, transitions.next_observations
 ```
 
-`segment_stream` is an infinite, shuffled stream. Need `DataLoader`-style
-multi-worker reads instead? Use `dataset.segments(...)`, an indexable,
-map-style dataset — see the README's
-[Map-style access](../README.md#map-style-access-torchutilsdatadataloader).
-
 ## Persisting and scaling up
 
 ```python
@@ -120,9 +176,10 @@ dataset = Dataset.open("my_dataset")                          # reopen anywhere
 big = Dataset.open("my_dataset").copy_to("my_dataset_zarr", backend="zarr")
 ```
 
-## Collecting data online
+## Collecting data online, two ways
 
-The write API mirrors a Gymnasium rollout one call per `env.step`:
+The write API mirrors a Gymnasium rollout one call per `env.step`. The usual
+way is a writer, kept for the lifetime of the rollout:
 
 ```python
 writer = dataset.new_episode()
@@ -134,6 +191,22 @@ writer.add_step({
     "terminated": terminated, "truncated": truncated,
 })
 # a True signal finalizes the episode, exactly as it ends the Gym episode
+```
+
+A writer is a stateless handle — only its `episode_id` needs to be kept. The
+same operations exist directly on `Dataset` by id, useful when you'd rather
+not carry a writer object around (e.g. across process boundaries), or want
+to append a whole segment in one call instead of step by step:
+
+```python
+episode_id = dataset.new_episode().episode_id   # writer discarded; only the id is kept
+
+dataset.add_reset(episode_id, obs)
+dataset.add_steps(episode_id, {                 # a whole segment, one call
+    "observations": obs_segment, "actions": action_segment,
+    "rewards": reward_segment, "terminated": terminated_segment,
+})
+dataset.end_episode(episode_id, terminated=True)  # or let a True signal finalize it
 ```
 
 ## Next steps
