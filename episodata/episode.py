@@ -20,7 +20,13 @@ if TYPE_CHECKING:
 
 
 class Episode:
-    """Lazy view of one logical trajectory."""
+    """Lazy view of one logical trajectory.
+
+    Lengths and indices count *transitions* (env steps): an episode that
+    took ``T`` ``env.step`` calls has ``len(episode) == T``. The reset row
+    that internally precedes the first transition is a storage detail,
+    surfaced only as ``observations[0]`` of a segment starting at 0.
+    """
 
     def __init__(self, dataset: "Dataset", episode_id: int):
         self._dataset = dataset
@@ -31,7 +37,9 @@ class Episode:
         return self._dataset.backend
 
     def __len__(self) -> int:
-        return self._backend.episode_length(self.id)
+        # Storage rows minus the reset row. An episode created bare
+        # (new_episode() without observations) has no rows yet: length 0.
+        return max(self._backend.episode_length(self.id) - 1, 0)
 
     @property
     def length(self) -> int:
@@ -57,10 +65,11 @@ class Episode:
         stop: int | None = None,
         fields: list[str] | None = None,
     ) -> Segment:
-        """Read steps ``[start, stop)`` of the selected fields.
+        """Read transitions ``[start, stop)`` of the selected fields.
 
-        Returns a :class:`Segment` with arrays shaped ``[L, ...]`` and
-        per-step ``terminated``/``truncated``/``mask`` flags.
+        Returns a :class:`Segment` of ``stop - start`` transitions with
+        per-transition ``terminated``/``truncated``/``mask`` flags; see the
+        :mod:`episodata.segment` docstring for the transition contract.
         """
         length = len(self)
         if stop is None:
@@ -72,14 +81,25 @@ class Episode:
         if not (0 <= start <= stop <= length):
             raise IndexError(f"segment [{start}, {stop}) out of range for length {length}")
         fields = self._dataset._resolve_fields(fields)
-        payload = self._backend.read_fields(fields, Selection(self.id, start, stop))
+        # L transitions live on rows [start, stop]. An episode with no rows
+        # at all (bare new_episode(), reset row not yet written) has nothing
+        # to read; every segment of it is empty.
+        if self._backend.episode_length(self.id) == 0:
+            schema = self._dataset.schema
+            rows = {
+                k: np.zeros((0, *schema.space_of(k).shape), dtype=schema.space_of(k).dtype)
+                for k in fields
+            }
+        else:
+            payload = self._backend.read_fields(fields, Selection(self.id, start, stop + 1))
+            rows = normalize_payload(payload)
         terminated = np.zeros(stop - start, dtype=bool)
         truncated = np.zeros(stop - start, dtype=bool)
         if stop == length and stop > start:
             terminated[-1] = self.terminated
             truncated[-1] = self.truncated
         return Segment(
-            normalize_payload(payload),
+            rows,
             self._dataset.schema,
             terminated=terminated,
             truncated=truncated,
@@ -87,16 +107,19 @@ class Episode:
         )
 
     def step(self, t: int, fields: list[str] | None = None) -> Segment:
-        """Read a single step; arrays and flags have no leading time dim."""
+        """Read a single transition; arrays and flags have no leading time
+        dim (``observations`` from row ``t``, ``actions``/``rewards``/
+        ``next_observations`` from row ``t + 1``)."""
         if t < 0:
             t += len(self)
         segment = self.segment(t, t + 1, fields=fields)
         return Segment(
-            {k: v[0] for k, v in segment.items()},
+            segment._rows,
             self._dataset.schema,
             terminated=segment.terminated[0],
             truncated=segment.truncated[0],
             mask=segment.mask[0],
+            _squeeze=True,
         )
 
     def read(self, fields: list[str] | None = None) -> Segment:

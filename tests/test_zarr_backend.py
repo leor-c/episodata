@@ -27,12 +27,12 @@ def make_dataset(path, lengths=(10, 7), **backend_options):
 def assert_episode_equal(dataset, episode_id, episode):
     segment = dataset.episode(episode_id).read()
     for key, expected in episode["observations"].items():
-        assert np.array_equal(segment[key], expected)
-    # row 0 is the synthesized dummy reset row; the source's action/reward follow
-    assert np.array_equal(segment["action"][1:], episode["actions"]["action"])
-    assert not segment["action"][0].any()
-    assert np.array_equal(segment["reward"][1:], episode["rewards"])
-    assert segment["reward"][0] == 0
+        # the round-trip identities of the transition view
+        assert np.array_equal(segment.next_observations[key], expected)
+        assert np.array_equal(segment[key][0], episode["initial_observation"][key])
+        assert np.array_equal(segment[key][1:], expected[:-1])
+    assert np.array_equal(segment["action"], episode["actions"]["action"])
+    assert np.array_equal(segment["reward"], episode["rewards"])
 
 
 def test_reopen_round_trip(tmp_path):
@@ -56,7 +56,7 @@ def test_ongoing_episode_survives_flush_and_reopen(tmp_path):
     dataset, _ = make_dataset(tmp_path / "ds")
     first = make_steps(4, seed=2)
     first.pop("terminated")
-    writer = dataset.new_episode()
+    writer = dataset.new_episode(make_episode(1, seed=2)["initial_observation"])
     writer.add_steps(first)
     dataset.flush()
 
@@ -81,7 +81,7 @@ def test_crash_recovery_resets_unspilled_episode(tmp_path):
     dataset, _ = make_dataset(tmp_path / "ds")
     steps = make_steps(4, seed=2)
     steps.pop("terminated")
-    writer = dataset.new_episode()
+    writer = dataset.new_episode(make_episode(1, seed=2)["initial_observation"])
     writer.add_steps(steps)
     dataset.flush()
 
@@ -101,20 +101,18 @@ def test_out_of_order_finalize_of_interleaved_episodes(tmp_path):
     a = make_steps(5, seed=4)
     b = make_steps(6, seed=5)
     a.pop("terminated"), b.pop("terminated")
-    writer_a = dataset.new_episode()
+    writer_a = dataset.new_episode(make_episode(1, seed=4)["initial_observation"])
     writer_a.add_steps(a)
-    writer_b = dataset.new_episode()
+    writer_b = dataset.new_episode(make_episode(1, seed=5)["initial_observation"])
     writer_b.add_steps(b)
     dataset.end_episode(writer_b.episode_id, truncated=True)  # b before a
     dataset.end_episode(writer_a.episode_id, terminated=True)
 
     reopened = Dataset.open(str(tmp_path / "ds"))
-    # a and b were appended as raw steps via a bare new_episode(), with no
-    # synthesized reset row, so compare directly (no shift)
     for episode_id, source in ((writer_a.episode_id, a), (writer_b.episode_id, b)):
         segment = reopened.episode(episode_id).read()
         for key, expected in source["observations"].items():
-            assert np.array_equal(segment[key], expected)
+            assert np.array_equal(segment.next_observations[key], expected)
         assert np.array_equal(segment["action"], source["actions"]["action"])
         assert np.array_equal(segment["reward"], source["rewards"])
     assert reopened.episode(writer_b.episode_id).truncated
@@ -128,7 +126,8 @@ def test_reads_across_chunk_boundaries(tmp_path):
     for start, stop in [(0, 50), (3, 11), (17, 18), (30, 49)]:
         segment = dataset.episode(0).segment(start, stop)
         assert np.array_equal(
-            segment["front_camera"], episodes[0]["observations"]["front_camera"][start:stop]
+            segment.next_observations["front_camera"],
+            episodes[0]["observations"]["front_camera"][start:stop],
         )
 
 
@@ -150,15 +149,24 @@ def test_missing_optional_field_raises_keyerror(tmp_path):
     )
     dataset = Dataset.create(schema, path=str(tmp_path / "ds"), backend="zarr")
     values = np.ones((3, 2), dtype=np.float32)
-    dataset.add_episode({"observations": {"a": values}})
-    dataset.add_episode({"observations": {"a": values, "b": 2 * values}})
+    initial = np.full(2, 7, dtype=np.float32)
+    dataset.add_episode(
+        {"initial_observation": {"a": initial}, "observations": {"a": values}}
+    )
+    dataset.add_episode(
+        {
+            "initial_observation": {"a": initial, "b": 2 * initial},
+            "observations": {"a": values, "b": 2 * values},
+        }
+    )
 
     for ds in (dataset, Dataset.open(str(tmp_path / "ds"))):
-        assert np.array_equal(ds.backend.read_fields(["a"], Selection(0, 0, 3))["a"], values)
+        # raw rows: the reset row precedes the per-step values
+        assert np.array_equal(ds.backend.read_fields(["a"], Selection(0, 1, 4))["a"], values)
         with pytest.raises(KeyError):
-            ds.backend.read_fields(["b"], Selection(0, 0, 3))
+            ds.backend.read_fields(["b"], Selection(0, 1, 4))
         assert np.array_equal(
-            ds.backend.read_fields(["b"], Selection(1, 0, 3))["b"], 2 * values
+            ds.backend.read_fields(["b"], Selection(1, 1, 4))["b"], 2 * values
         )
 
 
@@ -177,7 +185,7 @@ def test_copy_to_migrates_npz_to_zarr(tmp_path):
     source = Dataset.from_episodes(episodes, path=str(tmp_path / "npz"))
     ongoing = make_steps(4, seed=2)
     ongoing.pop("terminated")
-    writer = source.new_episode()
+    writer = source.new_episode(make_episode(1, seed=2)["initial_observation"])
     writer.add_steps(ongoing)
 
     copied = source.copy_to(path=str(tmp_path / "zarr"), backend="zarr")

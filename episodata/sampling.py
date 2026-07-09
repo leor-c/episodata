@@ -6,12 +6,14 @@ backend executes the reads. The v1 execution strategy is straightforward
 per-segment reads; a backend-aware planner can replace it later without
 changing this API.
 
-
-Segments are sampled uniformly over all valid (episode, start) pairs. An
-episode shorter than the segment still contributes one segment: it is
-zero-padded up to the segment length (at the end by default, at the start
-with ``pad="prefix"``), and the per-step ``mask`` marks which steps are
-real. :class:`SegmentDataset` (a map-style, indexable view — suited to
+A segment is a window of *transitions* (see :mod:`episodata.segment` for the
+transition contract), and ``sequence_length`` / ``context_length`` /
+``target_length`` count transitions. Segments are sampled uniformly over all
+valid (episode, start) pairs. An episode shorter than the segment still
+contributes one segment: its row buffer is zero-padded up to the segment
+length (at the end by default, at the start with ``pad="prefix"``), and the
+per-transition ``mask`` marks which transitions are real.
+:class:`SegmentDataset` (a map-style, indexable view — suited to
 ``torch.utils.data.DataLoader`` and its ``num_workers`` parallelism) is
 where segments are read, padded and collated; :class:`SegmentStream` (an
 infinite, shuffled, with-replacement stream) is a thin sampling policy on
@@ -38,12 +40,9 @@ if TYPE_CHECKING:
 
 @dataclasses.dataclass
 class TransitionBatch:
-    """A batch of ``(s, a, r, s', done)`` transitions, arrays batched along axis 0.
-
-    Under the action-in convention, ``actions`` and ``rewards`` are the ones
-    that led from ``observations`` to ``next_observations`` (stored on row
-    ``t + 1``); the pairing is done here, so consumers are alignment-free.
-    """
+    """A batch of ``(s, a, r, s', done)`` transitions, arrays batched along
+    axis 0 — a length-1 :class:`Batch` with the time dim squeezed away,
+    for control loops that want unbatched-in-time arrays."""
 
     observations: Fields
     actions: Fields
@@ -93,33 +92,36 @@ def read_segment(
 
 
 def pad_segment(
-    data: dict[str, np.ndarray], length: int, segment_length: int, mode: str | None
+    rows: dict[str, np.ndarray], num_transitions: int, segment_length: int, mode: str | None
 ) -> tuple[dict[str, np.ndarray], np.ndarray]:
-    """Zero-pad a ``length``-step segment read up to ``segment_length`` steps
-    and return it with the per-step validity mask (True on real steps)."""
+    """Zero-pad the row buffer of a ``num_transitions``-transition read up to
+    ``segment_length`` transitions (i.e. ``segment_length + 1`` rows) and
+    return it with the per-transition validity mask (True on real
+    transitions)."""
     mask = np.ones(segment_length, dtype=bool)
-    pad = segment_length - length
+    pad = segment_length - num_transitions
     if pad:
-        data = {k: _pad_axis0(v, pad, mode) for k, v in data.items()}
+        rows = {k: _pad_axis0(v, pad, mode) for k, v in rows.items()}
         if mode == "prefix":
             mask[:pad] = False
         else:
-            mask[length:] = False
-    return data, mask
+            mask[num_transitions:] = False
+    return rows, mask
 
 
 @dataclasses.dataclass(frozen=True)
 class SegmentIndex:
-    """Snapshot of valid sampling segments: episode ids, lengths, and the
-    cumulative segment count used to map a flat draw to a segment
-    :class:`Selection`.
+    """Snapshot of valid sampling segments: episode ids, lengths (in
+    transitions), and the cumulative segment count used to map a flat draw
+    to a row :class:`Selection`.
 
     :class:`SegmentDataset` builds one at construction, giving it the
     stable ``__len__`` a map-style dataset needs, and re-snapshots on
     :meth:`SegmentDataset.refresh` when the backend has seen writes.
 
-    With ``pad`` set, a non-empty episode shorter than the segment counts
-    as one segment; ``pad=None`` skips such episodes instead.
+    With ``pad`` set, an episode with at least one transition but fewer
+    than the segment length counts as one segment; ``pad=None`` skips such
+    episodes instead. Episodes with no transitions are never sampled.
     """
 
     episode_ids: np.ndarray
@@ -158,13 +160,15 @@ class SegmentIndex:
         return int(self.cumulative_segments[-1]) if len(self.cumulative_segments) else 0
 
     def resolve(self, flat_idx: int) -> tuple[Selection, int | None]:
-        """Map a flat segment index to a Selection, plus the in-segment
-        offset of the episode's terminal step (``None`` if this segment
-        doesn't reach the episode's end).
+        """Map a flat segment index to a row Selection, plus the in-segment
+        offset of the episode's terminal transition (``None`` if this
+        segment doesn't reach the episode's end).
 
-        For an episode shorter than the segment, the Selection covers the
-        whole episode (fewer than ``segment_length`` steps); the caller
-        pads the read up to the segment length according to ``pad``."""
+        Transitions ``[start, stop)`` live on rows ``[start, stop]``, so the
+        Selection covers one row more than the transition count. For an
+        episode shorter than the segment, it covers the whole episode; the
+        caller pads the read up to the segment length according to
+        ``pad``."""
         if not 0 <= flat_idx < len(self):
             raise IndexError(flat_idx)
         slot = int(np.searchsorted(self.cumulative_segments, flat_idx, side="right"))
@@ -173,9 +177,9 @@ class SegmentIndex:
         start = int(flat_idx - previous)
         length = int(self.lengths[slot])
         stop = min(start + self.segment_length, length)
-        selection = Selection(episode_id, start, stop)
+        selection = Selection(episode_id, start, stop + 1)
         last = length - 1
-        pad_front = self.segment_length - selection.length if self.pad == "prefix" else 0
+        pad_front = self.segment_length - (stop - start) if self.pad == "prefix" else 0
         terminal_offset = (
             last - start + pad_front if start <= last < start + self.segment_length else None
         )
@@ -209,11 +213,12 @@ class SegmentDataset:
     well without torch installed at all (e.g. ``segments[i]`` directly, or
     your own multiprocessing).
 
-    An episode shorter than the segment yields one segment, zero-padded up
-    to the segment length: at the end with ``pad="suffix"`` (default), at
-    the start with ``pad="prefix"``. ``Segment.mask`` (and ``Batch.mask``
-    after collation) is True on real steps. ``pad=None`` skips short
-    episodes instead.
+    Segments are windows of transitions and ``sequence_length`` counts
+    transitions. An episode shorter than the segment yields one segment,
+    zero-padded up to the segment length: at the end with ``pad="suffix"``
+    (default), at the start with ``pad="prefix"``. ``Segment.mask`` (and
+    ``Batch.mask`` after collation) is True on real transitions.
+    ``pad=None`` skips short episodes instead.
     """
 
     def __init__(
@@ -256,8 +261,8 @@ class SegmentDataset:
 
     def __getitem__(self, i: int) -> Segment:
         selection, terminal_offset = self._index.resolve(i)
-        data = read_segment(self.dataset.backend, self.fields, selection)
-        data, mask = pad_segment(data, selection.length, self.segment_length, self.pad)
+        rows = read_segment(self.dataset.backend, self.fields, selection)
+        rows, mask = pad_segment(rows, selection.length - 1, self.segment_length, self.pad)
         terminated = np.zeros(self.segment_length, dtype=bool)
         truncated = np.zeros(self.segment_length, dtype=bool)
         if terminal_offset is not None:
@@ -265,18 +270,19 @@ class SegmentDataset:
             terminated[terminal_offset] = backend.episode_terminated(selection.episode_id)
             truncated[terminal_offset] = backend.episode_truncated(selection.episode_id)
         return Segment(
-            data, self.dataset.schema, terminated=terminated, truncated=truncated, mask=mask
+            rows, self.dataset.schema, terminated=terminated, truncated=truncated, mask=mask
         )
 
     def collate(self, items: list[Segment]) -> Batch:
         """Combine single segments into a :class:`Batch`. Pass this as
-        ``DataLoader``'s ``collate_fn``."""
-        data = {k: np.stack([item[k] for item in items], axis=0) for k in self.fields}
+        ``DataLoader``'s ``collate_fn``. The row buffers are stacked once;
+        the batch's transition views re-derive from the stacked buffer."""
+        rows = {k: np.stack([item._rows[k] for item in items], axis=0) for k in self.fields}
         terminated = np.stack([item.terminated for item in items], axis=0)
         truncated = np.stack([item.truncated for item in items], axis=0)
         mask = np.stack([item.mask for item in items], axis=0)
         return Batch(
-            data,
+            rows,
             self.dataset.schema,
             context_length=self.context_length,
             target_length=self.target_length,
@@ -349,21 +355,23 @@ class SegmentStream:
         return segments.collate([segments[int(i)] for i in draws])
 
     def sample_transitions(self) -> TransitionBatch:
-        """Draw a batch of single-step transitions ``(s, a, r, s', done)``."""
-        if self.segment_length != 2:
-            raise ValueError("transition sampling requires sequence_length=2")
+        """Draw a batch of single transitions ``(s, a, r, s', done)`` — a
+        length-1 segment batch with the time dim squeezed away."""
+        if self.segment_length != 1:
+            raise ValueError("transition sampling requires sequence_length=1")
         batch = self.sample()
         schema = self.dataset.schema
         obs_keys = [k for k in self.fields if schema.field(k).role == "observation"]
         action_keys = [k for k in self.fields if schema.field(k).role == "action"]
         reward_keys = [k for k in self.fields if schema.field(k).role == "reward"]
+        next_observations = batch.next_observations
         return TransitionBatch(
             observations=Fields({k: batch[k][:, 0] for k in obs_keys}, schema),
-            actions=Fields({k: batch[k][:, 1] for k in action_keys}, schema),
-            rewards=batch[reward_keys[0]][:, 1] if reward_keys else None,
-            next_observations=Fields({k: batch[k][:, 1] for k in obs_keys}, schema),
-            terminated=batch.terminated[:, 1],
-            truncated=batch.truncated[:, 1],
+            actions=Fields({k: batch[k][:, 0] for k in action_keys}, schema),
+            rewards=batch[reward_keys[0]][:, 0] if reward_keys else None,
+            next_observations=Fields({k: next_observations[k][:, 0] for k in obs_keys}, schema),
+            terminated=batch.terminated[:, 0],
+            truncated=batch.truncated[:, 0],
         )
 
     def __iter__(self) -> Iterator[Batch]:

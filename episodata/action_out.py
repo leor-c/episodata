@@ -5,11 +5,13 @@ that *led to* observation ``t``, with a dummy reset row at index 0. Many
 classic RL pipelines instead produce action-out steps — ``(o_t, a_t, r_t)``
 where ``a_t`` is the action taken *at* ``o_t``.
 
-Action-out users need adapters only at the write boundaries; everything
-else is alignment-agnostic, and :meth:`Dataset.sample_transitions` already
-returns convention-free ``(s, a, r, s', done)`` tuples.
+Action-out users need adapters only at the write boundaries; every read is
+alignment-agnostic — segments and transitions alike name the pairing
+explicitly (``observations``/``actions``/``next_observations``).
 
-- bulk import: ``Dataset.from_episodes(..., alignment="action_out")``
+- bulk import: ``Dataset.from_episodes(..., alignment="action_out")``,
+  optionally with ``final_observation`` / ``final_info`` keys (mirroring
+  :meth:`ActionOutWriter.end`) to keep the final transition
 - online collection: :class:`ActionOutWriter`, wrapping a normal writer
 """
 

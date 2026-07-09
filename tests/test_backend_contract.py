@@ -4,7 +4,7 @@ space-oriented SpaceBlocks plugs into the same logical API unchanged."""
 import numpy as np
 
 from episodata import Dataset, MemoryBackend, SpaceBlock, register_backend
-from episodata.backends.base import normalize_payload
+from episodata.backends.base import Selection, normalize_payload
 from tests.conftest import make_episode, make_steps
 
 
@@ -74,6 +74,9 @@ def test_append_steps_batch_default_matches_looped():
         assert dataset.backend.revision > revision
         for i, episode_id in enumerate(ids):
             assert dataset.backend.episode_length(episode_id) == 1
-            row = dataset.episode(episode_id).step(0)
-            assert np.array_equal(row["state"], rows["state"][i])
-            assert row["reward"] == rows["reward"][i]
+            # a backend-level check: read the raw row across the boundary
+            read = normalize_payload(
+                dataset.backend.read_fields(["state", "reward"], Selection(episode_id, 0, 1))
+            )
+            assert np.array_equal(read["state"][0], rows["state"][i])
+            assert read["reward"][0] == rows["reward"][i]

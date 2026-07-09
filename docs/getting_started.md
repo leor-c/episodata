@@ -42,25 +42,21 @@ The payoff: prototype in memory, `Dataset.from_episodes(..., path=...)` to
 persist, and `dataset.copy_to(path, backend="zarr")` to scale up — without
 touching a single line downstream.
 
-## One convention worth knowing: action-in alignment
+## One idea worth knowing: everything counts env steps
 
-Every stored episode has one length `T`. Row `t` holds the action and reward
-that *led to* observation `t` — row 0 is the reset row (`env.reset()`'s
-observation, with a dummy zero action/reward). This is the natural shape of
-a Gymnasium rollout, and it makes `sample_transitions` unambiguous:
-`(obs[t], action[t+1], reward[t+1], obs[t+1], done[t+1])`.
-
-Bulk import mirrors that shape at the input boundary rather than asking you
-to build it: `observations` carries one entry more than `actions`/`rewards`
-(the reset row, then one entry per step), and the dummy zero action/reward
-at row 0 is synthesized for you — you never construct it by hand, the same
-as `dataset.new_episode(obs)` online.
+An episode that took `T` `env.step` calls has length `T` everywhere: `T`
+entries per field on write, `episode.length == T`, and `T` *transitions* on
+read. The reset observation is written as its own explicitly named key
+(`initial_observation` — what `env.reset()` returned), and reads pair every
+array by name — `actions[i]` is the action taken at `observations[i]`,
+`next_observations[i]` is what it produced — so there is no alignment
+convention to learn and no dummy values anywhere, in or out.
 
 `terminated` and `truncated` are separate signals, exactly as in Gymnasium.
 D4RL-style "action-out" data (action paired with the observation it was
 taken *at*) is converted once at the write boundary — see the README's
 [Action-out data](../README.md#action-out-data) section — so everything
-downstream only ever sees one convention.
+downstream is shared.
 
 ## Quick start
 
@@ -69,9 +65,13 @@ import numpy as np
 from episodata import Dataset
 
 episodes = [{
-    "observations": {  # one entry more than actions/rewards: the reset row, then 100 steps
-        "front_camera": np.zeros((101, 3, 64, 64), dtype=np.uint8),
-        "state": np.zeros((101, 7), dtype=np.float32),
+    "initial_observation": {  # what env.reset() returned
+        "front_camera": np.zeros((3, 64, 64), dtype=np.uint8),
+        "state": np.zeros(7, dtype=np.float32),
+    },
+    "observations": {         # one entry per step, like every other field
+        "front_camera": np.zeros((100, 3, 64, 64), dtype=np.uint8),
+        "state": np.zeros((100, 7), dtype=np.float32),
     },
     "actions": np.zeros((100, 4), dtype=np.float32),
     "rewards": np.zeros(100, dtype=np.float32),
@@ -84,17 +84,22 @@ dataset = Dataset.from_episodes(episodes)  # schema inferred automatically
 ## Reading data
 
 ```python
-seg = dataset.episode(0).segment(0, 8)   # steps [0, 8) of episode 0
+seg = dataset.episode(0).segment(0, 8)   # transitions [0, 8) of episode 0
 
-seg["front_camera"]      # flat field access
-seg.image.front_camera   # space access — grouped by shared shape/dtype
+seg["front_camera"]      # [8, ...] the obs each action was taken at
+seg.next_observations    # ... and the obs each action produced
 seg.action, seg.reward   # bare action/reward arrays resolve directly
+seg.image.front_camera   # space access — grouped by shared shape/dtype
 seg.observations         # role view: every observation-role field
-seg.terminated           # [L] flags, True only on a terminal final step
+seg.terminated           # [8] done flag of each transition
 ```
 
 Fields, spaces, and roles are just different ways of naming the same flat
-storage — pick whichever reads best at each call site.
+storage — pick whichever reads best at each call site. `observations`,
+`next_observations` and the action/reward arrays are zero-copy views into
+one shared row buffer, so consecutive-in-time arrays never duplicate
+memory; a segment starting at 0 surfaces the reset observation as
+`observations[0]`.
 
 ## Sampling for training
 
@@ -160,7 +165,7 @@ segments; how they're drawn is entirely up to the caller.
 
 For a simpler infinite, shuffled, single-process stream — no `DataLoader`
 needed — with optional `context` / `target` splitting for world-model
-training:
+training (all lengths count transitions):
 
 ```python
 stream = dataset.segment_stream(
@@ -169,7 +174,8 @@ stream = dataset.segment_stream(
     batch_size=64, seed=0,
 )
 batch = stream.sample()          # arrays [B, L, ...]
-batch.context, batch.target      # time-sliced views
+batch.context, batch.target      # time-sliced views; target.observations
+                                 # starts where context.next_observations ends
 
 transitions = dataset.sample_transitions(batch_size=256)
 transitions.observations, transitions.actions, transitions.next_observations
@@ -188,9 +194,9 @@ big = Dataset.open("my_dataset").copy_to("my_dataset_zarr", backend="zarr")
 ## Collecting data online, two ways
 
 The write API mirrors a Gymnasium rollout one-to-one: `new_episode` records
-what `env.reset()` returned (the reset row: initial observation, dummy zero
-action/reward), then one `add_step` call per `env.step`. The usual way is a
-writer, kept for the lifetime of the rollout:
+what `env.reset()` returned (the initial observation), then one `add_step`
+call per `env.step`. The usual way is a writer, kept for the lifetime of
+the rollout:
 
 ```python
 writer = dataset.new_episode(obs, infos=info)
@@ -223,7 +229,7 @@ dataset.end_episode(episode_id, terminated=True)  # or let a True signal finaliz
 For N parallel environments, `dataset.vector_writer()` drives one ongoing
 episode per env and handles their staggered boundaries: when env `i`
 reports `terminated`/`truncated`, its episode finalizes, and on the *next*
-step that env's observation starts a fresh episode as its reset row. This
+step that env's observation starts a fresh episode as its initial observation. This
 is next-step autoreset — the Gymnasium 1.0 vector default — and the loop is
 just the vector rollout, forwarded:
 

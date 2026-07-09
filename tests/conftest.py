@@ -11,18 +11,23 @@ requires_zarr = pytest.mark.skipif(
 
 
 def make_episode(length: int, seed: int = 0, terminated: bool = True):
-    """Build a bulk-import episode dict whose *stored* episode length is
-    ``length`` — observations has ``length`` rows (reset row + steps),
-    actions/rewards have ``length - 1`` (one per step)."""
+    """Build a bulk-import episode dict with ``length`` env steps:
+    ``initial_observation`` (the reset observation, no time dim) plus
+    equal-length observations/actions/rewards — one entry per step."""
     rng = np.random.default_rng(seed)
     return {
+        "initial_observation": {
+            "front_camera": rng.integers(0, 256, size=(3, 8, 8), dtype=np.uint8),
+            "wrist_camera": rng.integers(0, 256, size=(3, 8, 8), dtype=np.uint8),
+            "state": rng.standard_normal(5).astype(np.float32),
+        },
         "observations": {
             "front_camera": rng.integers(0, 256, size=(length, 3, 8, 8), dtype=np.uint8),
             "wrist_camera": rng.integers(0, 256, size=(length, 3, 8, 8), dtype=np.uint8),
             "state": rng.standard_normal((length, 5)).astype(np.float32),
         },
-        "actions": {"action": rng.standard_normal((length - 1, 2)).astype(np.float32)},
-        "rewards": rng.standard_normal(length - 1).astype(np.float32),
+        "actions": {"action": rng.standard_normal((length, 2)).astype(np.float32)},
+        "rewards": rng.standard_normal(length).astype(np.float32),
         "terminated": terminated,
     }
 

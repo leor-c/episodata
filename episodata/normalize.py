@@ -2,30 +2,40 @@
 
 Whole-episode bulk import (:func:`normalize_full_episode`, used by
 ``Dataset.from_episodes``/``add_episode`` under the default
-``alignment="action_in"``) accepts one entry more of observations than of
-actions/rewards — the natural "reset + N steps" rollout shape::
+``alignment="action_in"``) speaks env steps: every temporal field carries one
+entry per step, and the reset observation is a separate, explicitly named
+``initial_observation`` — Gymnasium's vocabulary, ``env.reset()``'s return::
 
     {
-        "observations": {"front_camera": array[T+1, ...], "state": array[T+1, ...]},
+        "initial_observation": {"front_camera": array[...], "state": array[...]},
+        "observations": {"front_camera": array[T, ...], "state": array[T, ...]},
         "actions": {"action": array[T, ...]},   # or a bare array
         "rewards": array[T],                     # optional
         "terminated": True,                      # bool or per-step array[T]
         "truncated": False,
-        "infos": {"success": array[T+1]},         # optional, paired with observations
+        "infos": {"success": array[T]},           # optional, needs initial_info
+        "initial_info": {"success": array_like},  # optional, pairs with infos
     }
 
-The reset row's action/reward — dummy zeros, mirroring what
-``Dataset.new_episode`` writes online — is synthesized here, not supplied by
-the caller. ``infos``, when present, is real data at every row including the
-reset row (Gymnasium's ``info`` accompanies both ``reset()`` and ``step()``);
-it is never zero-filled, and may be omitted entirely.
+The reset row's dummy zero action/reward — mirroring what
+``Dataset.new_episode`` writes online — is synthesized here, never supplied
+by the caller. ``infos`` pairing is all-or-nothing: an arbitrary info dict
+has no universal zero sentinel, so it is never zero-filled — if ``infos`` is
+supplied, ``initial_info`` must cover the same fields (Gymnasium's ``info``
+accompanies ``reset()`` too), and vice versa; both may be omitted entirely.
+
+Data recorded in the "action-out" convention (action taken *at* the row's
+observation, D4RL-style) is equal-length ``T`` as well and converted at this
+boundary (:func:`normalize_action_out_episode`): the optional
+``final_observation`` / ``final_info`` keys carry the observation produced by
+the final action, matching ``ActionOutWriter.end``'s kwargs; without them the
+final action/reward are dropped (their resulting observation was never
+recorded, so no transition could use them).
 
 Continuing an already-open episode (``add_steps``, and single-step
-``add_step``/``normalize_step``) has no reset row of its own to synthesize —
-every field there, including observations, actions, rewards and infos,
-shares one equal length (:func:`normalize_episode`). Data recorded in the
-"action-out" convention (action taken *at* the row's observation) also stays
-equal-length; it is converted with :func:`shift_action_out`.
+``add_step``/``normalize_step``) appends complete storage rows — every field
+there, including observations, actions, rewards and infos, shares one equal
+length (:func:`normalize_episode`).
 
 Internally everything becomes a flat mapping of field key -> array with a
 leading time dimension, plus episode-level terminated/truncated flags.
@@ -59,6 +69,14 @@ _INFO_KEYS = ("infos", "info")
 _ALL_TOP_LEVEL = (
     _OBS_KEYS + _ACTION_KEYS + _REWARD_KEYS + _TERMINATED_KEYS + _TRUNCATED_KEYS + _INFO_KEYS
 )
+
+# Boundary-row keys for whole-episode bulk import. Deliberately not part of
+# _ALL_TOP_LEVEL/_flatten: they are only meaningful to normalize_full_episode
+# and normalize_action_out_episode, never to add_steps/normalize_step.
+_INITIAL_OBS_KEY = "initial_observation"
+_INITIAL_INFO_KEY = "initial_info"
+_FINAL_OBS_KEY = "final_observation"
+_FINAL_INFO_KEY = "final_info"
 
 
 @dataclasses.dataclass
@@ -150,51 +168,100 @@ def normalize_episode(episode: Mapping[str, Any]) -> NormalizedEpisode:
 def normalize_full_episode(episode: Mapping[str, Any]) -> NormalizedEpisode:
     """Convert a canonical whole-episode dict (bulk import) into a :class:`NormalizedEpisode`.
 
-    Observations (and infos, if present) carry one entry per row, including
-    the reset row. Actions and rewards carry one entry per step — one fewer
-    than observations — and the reset row's action/reward are synthesized
-    here as dummy zeros, mirroring ``Dataset.new_episode``.
+    ``initial_observation`` (required) is the reset observation; every
+    temporal field carries one entry per env step. The reset row is
+    assembled here — real observation/info data, dummy zero action/reward —
+    mirroring ``Dataset.new_episode``.
     """
-    fields, roles = _flatten(episode)
+    if _INITIAL_OBS_KEY not in episode:
+        raise ValueError(
+            f"action-in bulk import requires {_INITIAL_OBS_KEY!r} (the reset observation)"
+        )
+    reset_step: dict[str, Any] = {"observations": episode[_INITIAL_OBS_KEY]}
+    if _INITIAL_INFO_KEY in episode:
+        reset_step["infos"] = episode[_INITIAL_INFO_KEY]
+    reset = normalize_step(reset_step)
 
-    row_keys = [k for k in fields if roles[k] in ("observation", "info")]
-    step_keys = [k for k in fields if roles[k] in ("action", "reward")]
+    core_episode = {
+        k: v for k, v in episode.items() if k not in (_INITIAL_OBS_KEY, _INITIAL_INFO_KEY)
+    }
+    core = normalize_episode(core_episode)
 
-    row_lengths = {k: len(fields[k]) for k in row_keys}
-    if len(set(row_lengths.values())) != 1:
-        raise ValueError(f"observations/infos must share one length, got {row_lengths}")
-    num_rows = next(iter(row_lengths.values()))
+    _validate_boundary_row(reset, core, _INITIAL_OBS_KEY, _INITIAL_INFO_KEY)
 
-    if step_keys:
-        step_lengths = {k: len(fields[k]) for k in step_keys}
-        if len(set(step_lengths.values())) != 1:
-            raise ValueError(f"actions/rewards must share one length, got {step_lengths}")
-        num_steps = next(iter(step_lengths.values()))
-        if num_steps != num_rows - 1:
-            raise ValueError(
-                f"observations has {num_rows} rows but actions/rewards have "
-                f"{num_steps}; expected {num_rows - 1} (one fewer, for the reset row)"
-            )
-        for key in step_keys:
-            arr = fields[key]
-            padded = np.zeros((num_rows, *arr.shape[1:]), dtype=arr.dtype)
+    fields: dict[str, np.ndarray] = {}
+    for key, arr in core.fields.items():
+        if key in reset.fields:
+            fields[key] = np.concatenate([reset.fields[key], arr])
+        else:  # action/reward: no reset-row counterpart, zero-fill row 0
+            padded = np.zeros((len(arr) + 1, *arr.shape[1:]), dtype=arr.dtype)
             padded[1:] = arr
             fields[key] = padded
-    else:
-        num_steps = max(num_rows - 1, 0)
-
-    terminated = _first(episode, _TERMINATED_KEYS)
-    truncated = _first(episode, _TRUNCATED_KEYS)
-    for name, raw in (("terminated", terminated), ("truncated", truncated)):
-        _validate_flag(name, raw, num_steps)
 
     return NormalizedEpisode(
         fields=fields,
-        roles=roles,
-        length=num_rows,
-        terminated=_flag(terminated),
-        truncated=_flag(truncated),
+        roles=core.roles,
+        length=core.length + 1,
+        terminated=core.terminated,
+        truncated=core.truncated,
     )
+
+
+def normalize_action_out_episode(episode: Mapping[str, Any]) -> NormalizedEpisode:
+    """Convert an action-out whole-episode dict into a :class:`NormalizedEpisode`.
+
+    Row ``t`` of the input holds the action taken *at* observation ``t``
+    (D4RL-style). ``final_observation`` (optional) is the observation the
+    final action produced: with it, nothing is dropped; without it, the
+    final action/reward are dropped (their resulting observation was never
+    recorded, so no transition could use them).
+    """
+    core_episode = {
+        k: v for k, v in episode.items() if k not in (_FINAL_OBS_KEY, _FINAL_INFO_KEY)
+    }
+    core = normalize_episode(core_episode)
+
+    if _FINAL_OBS_KEY not in episode:
+        if _FINAL_INFO_KEY in episode:
+            raise ValueError(f"{_FINAL_INFO_KEY!r} requires {_FINAL_OBS_KEY!r}")
+        return shift_action_out(core)
+
+    final_step: dict[str, Any] = {"observations": episode[_FINAL_OBS_KEY]}
+    if _FINAL_INFO_KEY in episode:
+        final_step["infos"] = episode[_FINAL_INFO_KEY]
+    final_row = normalize_step(final_step)
+
+    _validate_boundary_row(final_row, core, _FINAL_OBS_KEY, _FINAL_INFO_KEY)
+
+    fields: dict[str, np.ndarray] = {}
+    for key, arr in core.fields.items():
+        if key in final_row.fields:
+            fields[key] = np.concatenate([arr, final_row.fields[key]])
+        else:  # action/reward: shift one row later; nothing dropped this time
+            shifted = np.zeros((len(arr) + 1, *arr.shape[1:]), dtype=arr.dtype)
+            shifted[1:] = arr
+            fields[key] = shifted
+
+    return NormalizedEpisode(
+        fields=fields,
+        roles=core.roles,
+        length=core.length + 1,
+        terminated=core.terminated,
+        truncated=core.truncated,
+    )
+
+
+def _validate_boundary_row(
+    row: NormalizedEpisode, core: NormalizedEpisode, obs_key: str, info_key: str
+) -> None:
+    """A boundary row must cover exactly the core's observation/info fields —
+    this is what makes the infos pairing all-or-nothing."""
+    row_keys = {k for k in core.fields if core.roles[k] in ("observation", "info")}
+    if set(row.fields) != row_keys:
+        raise ValueError(
+            f"{obs_key}/{info_key} must cover exactly the same fields as "
+            f"observations/infos; got {sorted(row.fields)} vs {sorted(row_keys)}"
+        )
 
 
 def normalize_step(step: Mapping[str, Any]) -> NormalizedEpisode:

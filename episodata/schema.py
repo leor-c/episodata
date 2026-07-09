@@ -212,17 +212,17 @@ class DatasetSchema:
         Shape and dtype are inferred reliably. Space keys are generated from
         structural heuristics and can be renamed later (hybrid mode).
         ``alignment`` must match what will be passed to
-        ``Dataset.add_episode``/``from_episodes`` for this example: under the
-        default ``"action_in"``, observations carry one entry more than
-        actions/rewards (see ``normalize_full_episode``); ``"action_out"``
-        expects all fields at one equal length.
+        ``Dataset.add_episode``/``from_episodes`` for this example: the
+        default ``"action_in"`` requires ``initial_observation``;
+        ``"action_out"`` accepts an optional ``final_observation`` (see
+        ``normalize_full_episode`` / ``normalize_action_out_episode``).
         """
-        from .normalize import normalize_episode, normalize_full_episode
+        from .normalize import normalize_action_out_episode, normalize_full_episode
 
         if alignment == "action_in":
             normalized = normalize_full_episode(example_episode)
         elif alignment == "action_out":
-            normalized = normalize_episode(example_episode)
+            normalized = normalize_action_out_episode(example_episode)
         else:
             raise ValueError(f"unknown alignment {alignment!r}")
         spaces: dict[str, SpaceSpec] = {}

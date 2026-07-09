@@ -23,9 +23,13 @@ import numpy as np
 from episodata import Dataset
 
 episodes = [{
-    "observations": {  # one entry more than actions/rewards: the reset row, then 100 steps
-        "front_camera": np.zeros((101, 3, 64, 64), dtype=np.uint8),
-        "state": np.zeros((101, 7), dtype=np.float32),
+    "initial_observation": {  # what env.reset() returned
+        "front_camera": np.zeros((3, 64, 64), dtype=np.uint8),
+        "state": np.zeros(7, dtype=np.float32),
+    },
+    "observations": {         # one entry per step, like every other field
+        "front_camera": np.zeros((100, 3, 64, 64), dtype=np.uint8),
+        "state": np.zeros((100, 7), dtype=np.float32),
     },
     "actions": np.zeros((100, 4), dtype=np.float32),
     "rewards": np.zeros(100, dtype=np.float32),
@@ -44,21 +48,32 @@ dataset = Dataset.open("my_dataset")
 
 Observations, actions and rewards are all *fields* — named arrays grouped
 into *spaces* (shared shape/dtype). The hierarchy comes from the schema,
-not from nesting in storage. Episode reads return a `Segment` holding every
-field plus per-step `terminated`/`truncated`/`mask` flags:
+not from nesting in storage. Every read returns a `Segment` of
+*transitions*: each entry pairs the observation an action was taken at with
+that action, its reward, and the observation it produced — the names say
+what pairs with what, so there is no alignment convention to learn:
 
 ```python
-seg = dataset.episode(0).segment(0, 8)
-seg["front_camera"]         # flat access
+seg = dataset.episode(0).segment(0, 8)   # transitions [0, 8)
+seg["front_camera"]         # [8, ...] the obs each action was taken at
+seg.next_observations       # ... and the obs each action produced
+seg.action, seg.reward      # [8, ...] bare action/reward arrays resolve directly
+seg.terminated              # [8] done flag of each transition
+
 seg.image.front_camera      # space access
 seg.image.stacked()         # same-space fields stack safely
 for key, value in seg.image.items(): ...
 
-seg.action, seg.reward      # bare action/reward arrays resolve directly
 seg.observations            # role views: observation-role fields only
 seg.actions, seg.rewards    # ... action / reward roles, always collections
-seg.terminated              # [L] flag, True only on a terminal final step
 ```
+
+`seg.observations[k]`, `seg.next_observations[k]` and the action/reward
+arrays are zero-copy views into one shared row buffer — pixel observations
+are never duplicated. Lengths always count env steps: an episode that took
+`T` `env.step` calls has `episode.length == T` and reads as `T` transitions,
+with the reset observation surfacing as `observations[0]` of a segment
+starting at 0.
 
 ### Hierarchical fields (complex actions and observations)
 
@@ -68,6 +83,7 @@ stay flat, and the hierarchy is rebuilt at the access layer:
 
 ```python
 episode = {
+    "initial_observation": {"pov": pov0, "inventory": {"stone": s0, "wood": w0}},
     "observations": {"pov": pov, "inventory": {"stone": s, "wood": w}},
     "actions": {"camera": cam, "keyboard": {"w": fwd, "jump": jmp}},
     "rewards": rewards,
@@ -110,6 +126,8 @@ The persisted schema is authoritative — it is never re-inferred on reopen.
 
 ### Sampling
 
+All lengths count transitions (env steps):
+
 ```python
 # Fixed-length segments / context+target segments for world-model training
 stream = dataset.segment_stream(
@@ -120,7 +138,8 @@ stream = dataset.segment_stream(
     seed=0,
 )
 batch = stream.sample()             # arrays [B, L, ...]
-batch.context, batch.target         # time-sliced views
+batch.context, batch.target         # time-sliced views; target.observations
+                                    # starts where context.next_observations ends
 batch.terminated                    # [B, L] done flags
 
 # Sequential scan (evaluation, statistics)
@@ -160,11 +179,11 @@ for batch in loader: ...   # episodata.Batch, arrays [B, L, ...]
 ### Online episode append
 
 The write API mirrors the Gymnasium loop one-to-one: an episode begins at
-reset, so `new_episode` takes what `env.reset()` returned and writes the
-reset row (initial observation, dummy zero action/reward). Each `add_step`
-then records one `env.step` call — the action sent plus everything the env
-returned, including the separate `terminated` / `truncated` signals. A True
-signal finalizes the episode, exactly as it ends the Gymnasium episode:
+reset, so `new_episode` takes what `env.reset()` returned — the initial
+observation. Each `add_step` then records one `env.step` call — the action
+sent plus everything the env returned, including the separate
+`terminated` / `truncated` signals. A True signal finalizes the episode,
+exactly as it ends the Gymnasium episode:
 
 ```python
 obs, info = env.reset()
@@ -208,7 +227,7 @@ existing loaders immediately.
 For N parallel envs, `dataset.vector_writer()` keeps one ongoing episode
 per env and handles their staggered boundaries with next-step autoreset
 semantics (the Gymnasium 1.0 vector default): a done env's next observation
-starts a fresh episode as its reset row. Plain arrays in, no env-library
+starts a fresh episode as its initial observation. Plain arrays in, no env-library
 imports — any vec env source works:
 
 ```python
@@ -269,41 +288,57 @@ class MyBackend(StorageBackend):
 
 ## Conventions (v1)
 
-- Storage is **action-in**: every field of a stored episode shares one
-  length `T`, and row `t` holds the action and reward that *led to*
-  observation `t`. Row 0 is the reset row — the initial observation with
-  dummy zero action/reward (`dataset.new_episode(obs)`).
-- Bulk import (`Dataset.from_episodes`/`add_episode`, the default
-  `alignment="action_in"`) mirrors that same reset-plus-steps shape at the
-  input boundary: `observations` (and `infos`, if supplied) carry one entry
-  more than `actions`/`rewards`/`terminated`/`truncated` — the reset row plus
-  one entry per step. The dummy zero action/reward at row 0 is synthesized
-  for you, exactly as `new_episode` does online; you never construct it by
-  hand. `infos`, when supplied, is real data at every row including the
-  reset row (Gymnasium's `info` accompanies both `reset()` and `step()`) and
-  may be omitted entirely.
-- A transition is `(obs[t], action[t+1], reward[t+1], obs[t+1], done[t+1])`;
-  `sample_transitions` does this pairing, so its `(s, a, r, s', done)`
-  output is convention-free.
+The user-facing contract has **no alignment convention to learn** — both
+boundaries speak env steps, in Gymnasium's own vocabulary:
+
+- **Writes**: every temporal field carries one entry per step. Online,
+  `new_episode` records the reset observation and each `add_step` one
+  `env.step`. In bulk, `initial_observation` (required for the default
+  `alignment="action_in"`) is the reset observation and
+  `observations`/`actions`/`rewards` are the `T` steps that followed —
+  `actions[t]` *led to* `observations[t]`.
+- **Reads**: every read is a window of *transitions* with explicitly named,
+  transition-aligned arrays — `observations` (where each action was taken),
+  `actions`/`rewards`, `next_observations` (what each action produced), and
+  per-transition `terminated`/`truncated`/`mask` flags. An episode of `T`
+  steps has `episode.length == T` and exactly `T` transitions.
+- `infos` pair with observations (Gymnasium's `info` accompanies both
+  `reset()` and `step()`) and are all-or-nothing: supplying `infos` in bulk
+  requires the matching `initial_info` for the reset observation, and vice
+  versa — an arbitrary info dict has no universal zero sentinel, so it is
+  never zero-filled. Both may be omitted entirely.
 - `terminated` and `truncated` are separate signals, as in Gymnasium. The
   write API accepts them per step (a True value finalizes the episode, and
   is only legal on the final step); storage keeps them as episode-level
-  flags, and per-step flags in batches are derived (`True` only on an
-  episode's final step — which under action-in is exactly the row whose
-  `env.step` reported the signal).
+  flags, and the per-transition flags in reads are derived (`True` only on
+  an episode's final transition — the `env.step` that reported the signal).
 - Field keys are the stable logical identifiers used across the storage
   boundary.
+
+**Internal storage layout** (relevant only to backend implementers): a
+`T`-step episode is stored as `T + 1` equal-length rows in action-in
+alignment — row 0 is the reset row (initial observation, zero-filled
+action/reward), and row `t` holds the action and reward that led to
+observation `t`. The query layer reads `L + 1` rows per `L`-transition
+window and never exposes row indices or the zero-filled slots.
 
 ### Action-out data
 
 Pipelines that pair each observation with the action taken *at* it
 (D4RL-style) convert at the write boundary; storage stays canonical and
-everything downstream is shared:
+every read is shared — the transition view hands the pairing back exactly
+as the source meant it (`actions[i]` taken at `observations[i]`):
 
 ```python
 from episodata import ActionOutWriter
 
-# bulk import: rows are shifted at write time
+# bulk import: equal-length observations/actions/rewards, actions[t] taken
+# AT observations[t]; final_observation keeps the last transition
+episodes = [{
+    "observations": obs, "actions": acts, "rewards": rews,
+    "final_observation": last_obs,   # optional, mirrors ActionOutWriter.end
+    "terminated": True,
+}]
 dataset = Dataset.from_episodes(episodes, alignment="action_out")
 
 # online collection: obs written immediately, action/reward held one step
@@ -312,9 +347,10 @@ writer.add_step({"observations": o, "actions": a, "rewards": r})
 writer.end(terminated=True, final_observation=last_obs)
 ```
 
-Note the last action/reward of an action-out episode pair with an
-observation that was never recorded; pass `final_observation` (or accept
-that they are dropped — no transition could use them anyway).
+The last action/reward of an action-out episode pair with an observation
+that was never recorded; pass `final_observation` (and `final_info`, if
+using infos) to keep them, or accept that they are dropped — no transition
+could use them anyway.
 
 ## Development
 

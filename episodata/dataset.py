@@ -17,7 +17,13 @@ import numpy as np
 from .backends.base import Selection, StorageBackend, get_backend, normalize_payload
 from .episode import Episode, EpisodeWriter
 from .sampling import SegmentDataset, SegmentStream
-from .normalize import SEP, normalize_episode, normalize_full_episode, normalize_step, shift_action_out
+from .normalize import (
+    SEP,
+    normalize_action_out_episode,
+    normalize_episode,
+    normalize_full_episode,
+    normalize_step,
+)
 from .schema import DatasetSchema
 from .vector import VectorWriter
 
@@ -113,18 +119,20 @@ class Dataset:
     def add_episode(self, episode: Mapping[str, Any], alignment: str = "action_in") -> Episode:
         """Add one complete episode from a canonical episode dict.
 
-        Under the default ``alignment="action_in"``, observations carry one
-        entry more than actions/rewards (the reset row plus one entry per
-        step); the reset row's dummy zero action/reward is synthesized here,
-        mirroring ``new_episode``. ``alignment="action_out"`` instead accepts
-        episodes where row ``t`` holds the action taken *at* observation ``t``
-        (D4RL-style, all fields equal length); they are shifted to the
-        canonical action-in alignment at write time.
+        Every temporal field carries one entry per env step. Under the
+        default ``alignment="action_in"``, ``initial_observation`` (required)
+        is the reset observation and entry ``t`` holds the action that *led
+        to* observation ``t``; the reset row's dummy zero action/reward is
+        synthesized here, mirroring ``new_episode``.
+        ``alignment="action_out"`` instead accepts episodes where entry ``t``
+        holds the action taken *at* observation ``t`` (D4RL-style), with an
+        optional ``final_observation``; they are shifted to the canonical
+        action-in alignment at write time.
         """
         if alignment == "action_in":
             normalized = normalize_full_episode(episode)
         elif alignment == "action_out":
-            normalized = shift_action_out(normalize_episode(episode))
+            normalized = normalize_action_out_episode(episode)
         else:
             raise ValueError(f"unknown alignment {alignment!r}")
         episode_id = self.backend.create_episode()
@@ -319,10 +327,12 @@ class Dataset:
     ) -> SegmentStream:
         """Build a segment stream. See :class:`SegmentStream`.
 
-        ``pad`` controls segments drawn from episodes shorter than the
-        requested length: zero-padded at the end (``"suffix"``, default) or
-        at the start (``"prefix"``), with ``Batch.mask`` marking real
-        steps; ``None`` skips short episodes.
+        ``sequence_length`` / ``context_length`` / ``target_length`` count
+        transitions (env steps). ``pad`` controls segments drawn from
+        episodes shorter than the requested length: zero-padded at the end
+        (``"suffix"``, default) or at the start (``"prefix"``), with
+        ``Batch.mask`` marking real transitions; ``None`` skips short
+        episodes.
         """
         return SegmentStream(
             self,
@@ -375,7 +385,7 @@ class Dataset:
         transition into a zero-filled next observation.
         """
         stream = self.segment_stream(
-            fields=fields, batch_size=batch_size, sequence_length=2, seed=seed, filter=filter,
+            fields=fields, batch_size=batch_size, sequence_length=1, seed=seed, filter=filter,
             pad=None,
         )
         return stream.sample_transitions()

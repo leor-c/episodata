@@ -9,26 +9,28 @@ from episodata import Dataset, DatasetSchema
 
 
 def minecraft_episode(length: int = 8) -> dict:
-    """``length`` is the stored episode length: observations/inventory has
-    ``length`` rows, actions/keyboard/rewards have ``length - 1``."""
-    t = np.arange(length)
-    steps = length - 1
+    """``length`` env steps: ``initial_observation`` plus equal-length
+    observations/actions/rewards. Stone count equals the step number."""
     return {
+        "initial_observation": {
+            "pov": np.zeros((3, 16, 16), dtype=np.uint8),
+            "inventory": {"stone": 0, "wood": 0},
+        },
         "observations": {
             "pov": np.zeros((length, 3, 16, 16), dtype=np.uint8),
             "inventory": {
-                "stone": t.astype(np.int64),
+                "stone": np.arange(1, length + 1, dtype=np.int64),
                 "wood": np.zeros(length, dtype=np.int64),
             },
         },
         "actions": {
-            "camera": np.zeros((steps, 2), dtype=np.float32),
+            "camera": np.zeros((length, 2), dtype=np.float32),
             "keyboard": {
-                "w": np.ones(steps, dtype=np.uint8),
-                "jump": np.zeros(steps, dtype=np.uint8),
+                "w": np.ones(length, dtype=np.uint8),
+                "jump": np.zeros(length, dtype=np.uint8),
             },
         },
-        "rewards": np.zeros(steps, dtype=np.float32),
+        "rewards": np.zeros(length, dtype=np.float32),
         "terminated": True,
     }
 
@@ -50,12 +52,13 @@ def test_group_access(backend_name, dataset_path):
         [minecraft_episode()], path=dataset_path, backend=backend_name
     )
     obs = dataset.episode(0).read()
-    # row 0 is the synthesized dummy reset row; the source's 7 real steps follow
-    assert np.array_equal(obs.keyboard.w, [0, 1, 1, 1, 1, 1, 1, 1])
+    assert np.array_equal(obs.keyboard.w, np.ones(8))
     assert np.array_equal(obs["keyboard/w"], obs["keyboard"]["w"])
     assert set(obs.keyboard) == {"w", "jump"}
     assert set(dict(obs.inventory.items())) == {"stone", "wood"}
+    # observations pair the obs each action was taken at: reset obs first
     assert np.array_equal(obs.inventory.stone, np.arange(8))
+    assert np.array_equal(obs.next_observations["inventory/stone"], np.arange(1, 9))
     with pytest.raises(AttributeError, match="keyboard"):
         _ = obs.keyboard.missing
 
@@ -103,7 +106,8 @@ def test_nested_online_append(backend_name, dataset_path):
         }
     )
     episode = dataset.episode(writer.episode_id)
-    assert len(episode) == 2 and episode.terminated
+    assert len(episode) == 1 and episode.terminated
     data = episode.read()
-    assert np.array_equal(data["keyboard/w"], [0, 1])
-    assert np.array_equal(data["inventory/stone"], [0, 1])
+    assert np.array_equal(data["keyboard/w"], [1])
+    assert np.array_equal(data["inventory/stone"], [0])
+    assert np.array_equal(data.next_observations["inventory/stone"], [1])

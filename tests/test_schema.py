@@ -23,10 +23,14 @@ def test_infer_groups_structurally_identical_fields():
 
 def test_infer_separates_same_base_different_spec():
     episode = {
+        "initial_observation": {
+            "small": np.zeros((3, 8, 8), dtype=np.uint8),
+            "large": np.zeros((3, 16, 16), dtype=np.uint8),
+        },
         "observations": {
             "small": np.zeros((4, 3, 8, 8), dtype=np.uint8),
             "large": np.zeros((4, 3, 16, 16), dtype=np.uint8),
-        }
+        },
     }
     schema = DatasetSchema.infer(episode)
     assert schema.field("small").space != schema.field("large").space
@@ -38,7 +42,8 @@ def test_action_space_naming():
     assert schema.field("action").space == "action"
     # structurally distinct components get role-prefixed structural names
     episode = {
-        "observations": {"o": np.zeros((5, 3), dtype=np.float32)},
+        "initial_observation": {"o": np.zeros(3, dtype=np.float32)},
+        "observations": {"o": np.zeros((4, 3), dtype=np.float32)},
         "actions": {
             "camera": np.zeros((4, 2), dtype=np.float32),
             "jump": np.zeros(4, dtype=np.uint8),
@@ -49,7 +54,8 @@ def test_action_space_naming():
     assert schema.field("jump").space == "action_scalar"
     # actions never merge into observation spaces, even with matching format
     same_format = {
-        "observations": {"state": np.zeros((5, 2), dtype=np.float32)},
+        "initial_observation": {"state": np.zeros(2, dtype=np.float32)},
+        "observations": {"state": np.zeros((4, 2), dtype=np.float32)},
         "actions": np.zeros((4, 2), dtype=np.float32),
     }
     schema = DatasetSchema.infer(same_format)
@@ -60,7 +66,8 @@ def test_shadowed_field_warns():
     # a field named after its space is ambiguous once siblings exist:
     # attribute access yields the view, item access the field
     episode = {
-        "observations": {"o": np.zeros((5, 3), dtype=np.float32)},
+        "initial_observation": {"o": np.zeros(3, dtype=np.float32)},
+        "observations": {"o": np.zeros((4, 3), dtype=np.float32)},
         "actions": {
             "action": np.zeros((4, 2), dtype=np.float32),
             "action2": np.zeros((4, 2), dtype=np.float32),
