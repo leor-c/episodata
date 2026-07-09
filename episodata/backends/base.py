@@ -152,6 +152,19 @@ class StorageBackend(abc.ABC):
     def append_steps(self, episode_id: int, fields: Mapping[str, np.ndarray]) -> None:
         """Append steps (arrays with a leading time dim) to an ongoing episode."""
 
+    def append_steps_batch(
+        self, episode_ids: Sequence[int], fields: Mapping[str, np.ndarray]
+    ) -> None:
+        """Append one step to each of several ongoing episodes.
+
+        Arrays are shaped ``[N, *space.shape]``; row ``i`` goes to
+        ``episode_ids[i]``. The default implementation loops the
+        per-episode append; backends may override with a vectorized write
+        (an override must call ``_touch()`` at least once).
+        """
+        for i, episode_id in enumerate(episode_ids):
+            self.append_steps(episode_id, {k: a[i : i + 1] for k, a in fields.items()})
+
     @abc.abstractmethod
     def finalize_episode(self, episode_id: int, terminated: bool, truncated: bool) -> None:
         """Close an ongoing episode and persist its termination flags."""

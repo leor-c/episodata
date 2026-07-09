@@ -203,6 +203,31 @@ This also works after `Dataset.open` on a persistent backend (ongoing
 episodes survive `flush()` / reopen). New episodes become sampleable by
 existing loaders immediately.
 
+### Vectorized environments
+
+For N parallel envs, `dataset.vector_writer()` keeps one ongoing episode
+per env and handles their staggered boundaries with next-step autoreset
+semantics (the Gymnasium 1.0 vector default): a done env's next observation
+starts a fresh episode as its reset row. Plain arrays in, no env-library
+imports — any vec env source works:
+
+```python
+vec = dataset.vector_writer()
+obs, infos = envs.reset(seed=0)
+vec.reset(obs)
+
+for _ in range(num_steps):
+    obs, rewards, terminated, truncated, infos = envs.step(actions)
+    vec.step(obs, actions=actions, rewards=rewards,
+             terminated=terminated, truncated=truncated)
+
+vec.close()  # still-ongoing episodes are finalized as truncated
+```
+
+See [the getting-started guide](docs/getting_started.md#collecting-from-vectorized-environments)
+for details, including the recipe for same-step-autoreset envs (older
+Gymnasium, SB3), which drive one writer per env instead.
+
 ## Storage backends
 
 Built-in:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any, Callable
 
 import numpy as np
@@ -19,6 +19,7 @@ from .episode import Episode, EpisodeWriter
 from .sampling import SegmentDataset, SegmentStream
 from .normalize import SEP, normalize_episode, normalize_step, shift_action_out
 from .schema import DatasetSchema
+from .vector import VectorWriter
 
 
 class Dataset:
@@ -159,6 +160,15 @@ class Dataset:
             raise ValueError(f"episode {episode_id} is finalized")
         return EpisodeWriter(self, episode_id)
 
+    def vector_writer(self, num_envs: int | None = None) -> VectorWriter:
+        """Collect from N parallel environments with staggered episode
+        boundaries; see :class:`VectorWriter`.
+
+        ``num_envs`` may be omitted and is then inferred from the first
+        :meth:`VectorWriter.reset` call.
+        """
+        return VectorWriter(self, num_envs=num_envs)
+
     def _write_reset_row(
         self,
         episode_id: int,
@@ -217,6 +227,22 @@ class Dataset:
         if not self.backend.episode_ongoing(episode_id):
             raise ValueError(f"episode {episode_id} is finalized")
         self.backend.append_steps(episode_id, self._validate_fields(fields))
+
+    def _add_step_batch(
+        self, episode_ids: Sequence[int], fields: Mapping[str, np.ndarray]
+    ) -> None:
+        """Append one already-normalized step per episode (row ``i`` goes to
+        ``episode_ids[i]``)."""
+        fields = self._validate_fields(fields)
+        for key, arr in fields.items():
+            if len(arr) != len(episode_ids):
+                raise ValueError(
+                    f"field {key!r} has {len(arr)} rows for {len(episode_ids)} episodes"
+                )
+        for episode_id in episode_ids:
+            if not self.backend.episode_ongoing(episode_id):
+                raise ValueError(f"episode {episode_id} is finalized")
+        self.backend.append_steps_batch(list(episode_ids), fields)
 
     def rename_space(self, old: str, new: str) -> None:
         """Hybrid mode: rename an (inferred) space and persist the schema."""

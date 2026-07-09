@@ -212,6 +212,52 @@ dataset.add_steps(episode_id, {                 # a whole segment, one call
 dataset.end_episode(episode_id, terminated=True)  # or let a True signal finalize it
 ```
 
+## Collecting from vectorized environments
+
+For N parallel environments, `dataset.vector_writer()` drives one ongoing
+episode per env and handles their staggered boundaries: when env `i`
+reports `terminated`/`truncated`, its episode finalizes, and on the *next*
+step that env's observation starts a fresh episode as its reset row. This
+is next-step autoreset — the Gymnasium 1.0 vector default — and the loop is
+just the vector rollout, forwarded:
+
+```python
+envs = gym.make_vec("CartPole-v1", num_envs=8)  # any vec env; the writer takes plain arrays
+
+vec = dataset.vector_writer()
+obs, infos = envs.reset(seed=0)
+vec.reset(obs)
+
+for _ in range(num_steps):
+    actions = policy(obs)
+    obs, rewards, terminated, truncated, infos = envs.step(actions)
+    vec.step(obs, actions=actions, rewards=rewards,
+             terminated=terminated, truncated=truncated)
+
+vec.close()  # still-ongoing episodes are finalized as truncated
+```
+
+All values carry a leading `num_envs` dimension; the writer never imports
+an environment library, so any vec env source works (EnvPool, custom sims,
+GPU rollouts after `.cpu().numpy()`). Per-step infos are accepted as a dict
+of dense `[N, ...]` arrays — scattering Gymnasium's `_key`-masked info
+dicts into dense arrays is up to you.
+
+Vec envs using the *same-step* convention (older Gymnasium, SB3: the done
+step already returns the next episode's reset obs, and the true final
+observation hides in `infos`) don't need `VectorWriter` — drive one writer
+per env; interleaved open episodes are fully supported:
+
+```python
+writers = [dataset.new_episode(o) for o in reset_obs]      # one per env
+# per env i on each step:
+writers[i].add_step({"observations": final_obs_i if done_i else obs[i],
+                     "actions": actions[i], "rewards": rewards[i],
+                     "terminated": terminated[i], "truncated": truncated[i]})
+if done_i:
+    writers[i] = dataset.new_episode(obs[i])               # obs[i] is already the reset obs
+```
+
 ## Next steps
 
 - [`examples/getting_started.ipynb`](../examples/getting_started.ipynb) — a

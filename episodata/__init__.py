@@ -21,6 +21,7 @@ from .fields import FieldGroup, Fields, Observation, SpaceView
 from .sampling import SegmentDataset, SegmentStream, TransitionBatch
 from .schema import DatasetSchema, FieldSpec, SpaceSpec
 from .segment import Batch, Segment
+from .vector import VectorWriter
 
 __version__ = "0.1.0"
 
@@ -46,6 +47,7 @@ __all__ = [
     "SpaceView",
     "StorageBackend",
     "TransitionBatch",
+    "VectorWriter",
     "ZarrBackend",
     "get_backend",
     "register_backend",

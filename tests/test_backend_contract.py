@@ -51,3 +51,29 @@ def test_normalize_payload_forms():
     blocks = [SpaceBlock(space="s", keys=("a", "b"), data=np.zeros((2, 5, 2)))]
     out = normalize_payload(blocks)
     assert set(out) == {"a", "b"} and out["a"].shape == (5, 2)
+
+
+def test_append_steps_batch_default_matches_looped():
+    # the default implementation is inherited by any backend, including
+    # third-party subclasses that never heard of it
+    for backend in ("memory", "spaceblock_memory"):
+        dataset = Dataset.from_episodes([make_episode(3, seed=0)], backend=backend)
+        ids = [dataset.new_episode().episode_id for _ in range(2)]
+        revision = dataset.backend.revision
+
+        source = make_episode(2, seed=1)
+        rows = {
+            "front_camera": source["observations"]["front_camera"],
+            "wrist_camera": source["observations"]["wrist_camera"],
+            "state": source["observations"]["state"],
+            "action": source["actions"]["action"],
+            "reward": source["rewards"],
+        }
+        dataset.backend.append_steps_batch(ids, rows)
+
+        assert dataset.backend.revision > revision
+        for i, episode_id in enumerate(ids):
+            assert dataset.backend.episode_length(episode_id) == 1
+            row = dataset.episode(episode_id).step(0)
+            assert np.array_equal(row["state"], rows["state"][i])
+            assert row["reward"] == rows["reward"][i]
