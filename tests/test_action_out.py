@@ -48,7 +48,7 @@ def _stream(writer: ActionOutWriter, steps: int) -> None:
 
 
 def test_action_out_writer_with_final_observation():
-    dataset = Dataset.create(DatasetSchema.infer(action_out_episode()))
+    dataset = Dataset.create(DatasetSchema.infer(action_out_episode(), alignment="action_out"))
     writer = ActionOutWriter(dataset.new_episode())
     _stream(writer, 4)
     episode = writer.end(
@@ -62,7 +62,7 @@ def test_action_out_writer_with_final_observation():
 
 
 def test_action_out_writer_drops_pending_without_final_observation():
-    dataset = Dataset.create(DatasetSchema.infer(action_out_episode()))
+    dataset = Dataset.create(DatasetSchema.infer(action_out_episode(), alignment="action_out"))
     writer = ActionOutWriter(dataset.new_episode())
     _stream(writer, 4)
     episode = writer.end(truncated=True)
@@ -72,7 +72,7 @@ def test_action_out_writer_drops_pending_without_final_observation():
 
 
 def test_action_out_step_signals():
-    dataset = Dataset.create(DatasetSchema.infer(action_out_episode()))
+    dataset = Dataset.create(DatasetSchema.infer(action_out_episode(), alignment="action_out"))
     writer = ActionOutWriter(dataset.new_episode())
     _stream(writer, 3)
     # terminal observation arrives with its Gymnasium-style signal; no action
@@ -88,7 +88,7 @@ def test_action_out_step_signals():
 
 def test_writer_and_bulk_import_agree():
     imported = Dataset.from_episodes([action_out_episode(5)], alignment="action_out")
-    streamed = Dataset.create(DatasetSchema.infer(action_out_episode()))
+    streamed = Dataset.create(DatasetSchema.infer(action_out_episode(), alignment="action_out"))
     writer = ActionOutWriter(streamed.new_episode())
     _stream(writer, 5)
     writer.end(terminated=True)

@@ -5,7 +5,7 @@ import numpy as np
 
 from episodata import Dataset, MemoryBackend, SpaceBlock, register_backend
 from episodata.backends.base import normalize_payload
-from tests.conftest import make_episode
+from tests.conftest import make_episode, make_steps
 
 
 @register_backend
@@ -61,7 +61,7 @@ def test_append_steps_batch_default_matches_looped():
         ids = [dataset.new_episode().episode_id for _ in range(2)]
         revision = dataset.backend.revision
 
-        source = make_episode(2, seed=1)
+        source = make_steps(2, seed=1)
         rows = {
             "front_camera": source["observations"]["front_camera"],
             "wrist_camera": source["observations"]["wrist_camera"],

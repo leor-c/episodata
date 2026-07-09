@@ -101,8 +101,9 @@ def test_short_episode_yields_one_suffix_padded_segment(dataset):
     segments = dataset.segments(fields=["reward"], sequence_length=8)
     assert len(segments) == 4
     padded = segments[3]
-    source = make_episode(7, seed=1, terminated=False)["rewards"]
-    assert np.array_equal(padded["reward"][:7], source)
+    # row 0 is the synthesized dummy reset row; source["rewards"] follows
+    stored = np.concatenate([[0], make_episode(7, seed=1, terminated=False)["rewards"]]).astype(np.float32)
+    assert np.array_equal(padded["reward"][:7], stored)
     assert np.array_equal(padded["reward"][7:], np.zeros(1, dtype=np.float32))
     assert np.array_equal(padded.mask, [True] * 7 + [False])
     # full segments carry an all-True mask
@@ -112,8 +113,8 @@ def test_short_episode_yields_one_suffix_padded_segment(dataset):
 def test_short_episode_prefix_padding(dataset):
     segments = dataset.segments(fields=["reward"], sequence_length=8, pad="prefix")
     padded = segments[3]
-    source = make_episode(7, seed=1, terminated=False)["rewards"]
-    assert np.array_equal(padded["reward"][1:], source)
+    stored = np.concatenate([[0], make_episode(7, seed=1, terminated=False)["rewards"]]).astype(np.float32)
+    assert np.array_equal(padded["reward"][1:], stored)
     assert padded["reward"][0] == 0
     assert np.array_equal(padded.mask, [False] + [True] * 7)
 
@@ -151,8 +152,8 @@ def test_refresh_reveals_appended_episodes(dataset):
     assert len(segments) == 11
     segments.refresh()
     assert len(segments) == 11 + 3
-    source = make_episode(6, seed=2)["rewards"]
-    assert np.array_equal(segments[11]["reward"], source[0:4])
+    stored = np.concatenate([[0], make_episode(6, seed=2)["rewards"]]).astype(np.float32)
+    assert np.array_equal(segments[11]["reward"], stored[0:4])
 
 
 def test_refresh_is_noop_without_writes(dataset):

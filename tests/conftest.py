@@ -11,6 +11,26 @@ requires_zarr = pytest.mark.skipif(
 
 
 def make_episode(length: int, seed: int = 0, terminated: bool = True):
+    """Build a bulk-import episode dict whose *stored* episode length is
+    ``length`` — observations has ``length`` rows (reset row + steps),
+    actions/rewards have ``length - 1`` (one per step)."""
+    rng = np.random.default_rng(seed)
+    return {
+        "observations": {
+            "front_camera": rng.integers(0, 256, size=(length, 3, 8, 8), dtype=np.uint8),
+            "wrist_camera": rng.integers(0, 256, size=(length, 3, 8, 8), dtype=np.uint8),
+            "state": rng.standard_normal((length, 5)).astype(np.float32),
+        },
+        "actions": {"action": rng.standard_normal((length - 1, 2)).astype(np.float32)},
+        "rewards": rng.standard_normal(length - 1).astype(np.float32),
+        "terminated": terminated,
+    }
+
+
+def make_steps(length: int, seed: int = 0, terminated: bool = True):
+    """Build a plain step-batch dict (no reset row) for continuing an
+    already-open episode via ``writer.add_steps``/``Dataset.add_steps``:
+    observations, actions, rewards, terminated all share ``length``."""
     rng = np.random.default_rng(seed)
     return {
         "observations": {

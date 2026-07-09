@@ -1,15 +1,31 @@
 """Normalization of user-provided episode data into flat temporal fields.
 
-The canonical episode dict accepted from users looks like::
+Whole-episode bulk import (:func:`normalize_full_episode`, used by
+``Dataset.from_episodes``/``add_episode`` under the default
+``alignment="action_in"``) accepts one entry more of observations than of
+actions/rewards — the natural "reset + N steps" rollout shape::
 
     {
-        "observations": {"front_camera": array[T, ...], "state": array[T, ...]},
+        "observations": {"front_camera": array[T+1, ...], "state": array[T+1, ...]},
         "actions": {"action": array[T, ...]},   # or a bare array
         "rewards": array[T],                     # optional
-        "terminated": True,                      # bool or per-step array
+        "terminated": True,                      # bool or per-step array[T]
         "truncated": False,
-        "infos": {"success": array[T]},          # optional
+        "infos": {"success": array[T+1]},         # optional, paired with observations
     }
+
+The reset row's action/reward — dummy zeros, mirroring what
+``Dataset.new_episode`` writes online — is synthesized here, not supplied by
+the caller. ``infos``, when present, is real data at every row including the
+reset row (Gymnasium's ``info`` accompanies both ``reset()`` and ``step()``);
+it is never zero-filled, and may be omitted entirely.
+
+Continuing an already-open episode (``add_steps``, and single-step
+``add_step``/``normalize_step``) has no reset row of its own to synthesize —
+every field there, including observations, actions, rewards and infos,
+shares one equal length (:func:`normalize_episode`). Data recorded in the
+"action-out" convention (action taken *at* the row's observation) also stays
+equal-length; it is converted with :func:`shift_action_out`.
 
 Internally everything becomes a flat mapping of field key -> array with a
 leading time dimension, plus episode-level terminated/truncated flags.
@@ -19,10 +35,7 @@ Nested dicts (complex action/observation structures, e.g. Minecraft-style
 nesting in storage.
 
 Temporal alignment is "action-in": row ``t`` holds the action and reward
-that *led to* observation ``t``. Row 0 is the reset row — the initial
-observation with dummy zero action/reward (see ``Dataset.new_episode``).
-Data recorded in the "action-out" convention (action taken *at* the row's
-observation) is converted with :func:`shift_action_out`.
+that *led to* observation ``t``. Row 0 is the reset row.
 """
 
 from __future__ import annotations
@@ -59,11 +72,8 @@ class NormalizedEpisode:
     truncated: bool
 
 
-def normalize_episode(episode: Mapping[str, Any]) -> NormalizedEpisode:
-    """Convert a canonical episode dict into a :class:`NormalizedEpisode`.
-
-    All temporal fields must share the same length ``T``.
-    """
+def _flatten(episode: Mapping[str, Any]) -> tuple[dict[str, np.ndarray], dict[str, str]]:
+    """Flatten a canonical episode dict into flat field arrays plus roles."""
     unknown = [k for k in episode if k not in _ALL_TOP_LEVEL]
     if unknown:
         raise ValueError(
@@ -108,6 +118,16 @@ def normalize_episode(episode: Mapping[str, Any]) -> NormalizedEpisode:
     if not fields:
         raise ValueError("episode contains no temporal fields")
 
+    return fields, roles
+
+
+def normalize_episode(episode: Mapping[str, Any]) -> NormalizedEpisode:
+    """Convert a canonical episode dict into a :class:`NormalizedEpisode`.
+
+    All temporal fields must share the same length ``T``.
+    """
+    fields, roles = _flatten(episode)
+
     lengths = {key: len(arr) for key, arr in fields.items()}
     if len(set(lengths.values())) != 1:
         raise ValueError(f"all temporal fields must share one length, got {lengths}")
@@ -122,6 +142,56 @@ def normalize_episode(episode: Mapping[str, Any]) -> NormalizedEpisode:
         fields=fields,
         roles=roles,
         length=length,
+        terminated=_flag(terminated),
+        truncated=_flag(truncated),
+    )
+
+
+def normalize_full_episode(episode: Mapping[str, Any]) -> NormalizedEpisode:
+    """Convert a canonical whole-episode dict (bulk import) into a :class:`NormalizedEpisode`.
+
+    Observations (and infos, if present) carry one entry per row, including
+    the reset row. Actions and rewards carry one entry per step — one fewer
+    than observations — and the reset row's action/reward are synthesized
+    here as dummy zeros, mirroring ``Dataset.new_episode``.
+    """
+    fields, roles = _flatten(episode)
+
+    row_keys = [k for k in fields if roles[k] in ("observation", "info")]
+    step_keys = [k for k in fields if roles[k] in ("action", "reward")]
+
+    row_lengths = {k: len(fields[k]) for k in row_keys}
+    if len(set(row_lengths.values())) != 1:
+        raise ValueError(f"observations/infos must share one length, got {row_lengths}")
+    num_rows = next(iter(row_lengths.values()))
+
+    if step_keys:
+        step_lengths = {k: len(fields[k]) for k in step_keys}
+        if len(set(step_lengths.values())) != 1:
+            raise ValueError(f"actions/rewards must share one length, got {step_lengths}")
+        num_steps = next(iter(step_lengths.values()))
+        if num_steps != num_rows - 1:
+            raise ValueError(
+                f"observations has {num_rows} rows but actions/rewards have "
+                f"{num_steps}; expected {num_rows - 1} (one fewer, for the reset row)"
+            )
+        for key in step_keys:
+            arr = fields[key]
+            padded = np.zeros((num_rows, *arr.shape[1:]), dtype=arr.dtype)
+            padded[1:] = arr
+            fields[key] = padded
+    else:
+        num_steps = max(num_rows - 1, 0)
+
+    terminated = _first(episode, _TERMINATED_KEYS)
+    truncated = _first(episode, _TRUNCATED_KEYS)
+    for name, raw in (("terminated", terminated), ("truncated", truncated)):
+        _validate_flag(name, raw, num_steps)
+
+    return NormalizedEpisode(
+        fields=fields,
+        roles=roles,
+        length=num_rows,
         terminated=_flag(terminated),
         truncated=_flag(truncated),
     )

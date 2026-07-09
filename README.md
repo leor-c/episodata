@@ -23,9 +23,9 @@ import numpy as np
 from episodata import Dataset
 
 episodes = [{
-    "observations": {
-        "front_camera": np.zeros((100, 3, 64, 64), dtype=np.uint8),
-        "state": np.zeros((100, 7), dtype=np.float32),
+    "observations": {  # one entry more than actions/rewards: the reset row, then 100 steps
+        "front_camera": np.zeros((101, 3, 64, 64), dtype=np.uint8),
+        "state": np.zeros((101, 7), dtype=np.float32),
     },
     "actions": np.zeros((100, 4), dtype=np.float32),
     "rewards": np.zeros(100, dtype=np.float32),
@@ -269,10 +269,19 @@ class MyBackend(StorageBackend):
 
 ## Conventions (v1)
 
-- All temporal fields of an episode share one length `T`, aligned
-  **action-in**: row `t` holds the action and reward that *led to*
+- Storage is **action-in**: every field of a stored episode shares one
+  length `T`, and row `t` holds the action and reward that *led to*
   observation `t`. Row 0 is the reset row — the initial observation with
   dummy zero action/reward (`dataset.new_episode(obs)`).
+- Bulk import (`Dataset.from_episodes`/`add_episode`, the default
+  `alignment="action_in"`) mirrors that same reset-plus-steps shape at the
+  input boundary: `observations` (and `infos`, if supplied) carry one entry
+  more than `actions`/`rewards`/`terminated`/`truncated` — the reset row plus
+  one entry per step. The dummy zero action/reward at row 0 is synthesized
+  for you, exactly as `new_episode` does online; you never construct it by
+  hand. `infos`, when supplied, is real data at every row including the
+  reset row (Gymnasium's `info` accompanies both `reset()` and `step()`) and
+  may be omitted entirely.
 - A transition is `(obs[t], action[t+1], reward[t+1], obs[t+1], done[t+1])`;
   `sample_transitions` does this pairing, so its `(s, a, r, s', done)`
   output is convention-free.

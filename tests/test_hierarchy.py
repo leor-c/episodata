@@ -9,7 +9,10 @@ from episodata import Dataset, DatasetSchema
 
 
 def minecraft_episode(length: int = 8) -> dict:
+    """``length`` is the stored episode length: observations/inventory has
+    ``length`` rows, actions/keyboard/rewards have ``length - 1``."""
     t = np.arange(length)
+    steps = length - 1
     return {
         "observations": {
             "pov": np.zeros((length, 3, 16, 16), dtype=np.uint8),
@@ -19,13 +22,13 @@ def minecraft_episode(length: int = 8) -> dict:
             },
         },
         "actions": {
-            "camera": np.zeros((length, 2), dtype=np.float32),
+            "camera": np.zeros((steps, 2), dtype=np.float32),
             "keyboard": {
-                "w": np.ones(length, dtype=np.uint8),
-                "jump": np.zeros(length, dtype=np.uint8),
+                "w": np.ones(steps, dtype=np.uint8),
+                "jump": np.zeros(steps, dtype=np.uint8),
             },
         },
-        "rewards": np.zeros(length, dtype=np.float32),
+        "rewards": np.zeros(steps, dtype=np.float32),
         "terminated": True,
     }
 
@@ -47,7 +50,8 @@ def test_group_access(backend_name, dataset_path):
         [minecraft_episode()], path=dataset_path, backend=backend_name
     )
     obs = dataset.episode(0).read()
-    assert np.array_equal(obs.keyboard.w, np.ones(8, dtype=np.uint8))
+    # row 0 is the synthesized dummy reset row; the source's 7 real steps follow
+    assert np.array_equal(obs.keyboard.w, [0, 1, 1, 1, 1, 1, 1, 1])
     assert np.array_equal(obs["keyboard/w"], obs["keyboard"]["w"])
     assert set(obs.keyboard) == {"w", "jump"}
     assert set(dict(obs.inventory.items())) == {"stone", "wood"}

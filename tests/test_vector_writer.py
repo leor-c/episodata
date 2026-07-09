@@ -13,7 +13,7 @@ from episodata import Dataset, DatasetSchema
 
 def _example():
     return {
-        "observations": {"state": np.zeros((2, 3), dtype=np.float32)},
+        "observations": {"state": np.zeros((3, 3), dtype=np.float32)},
         "actions": np.zeros((2, 2), dtype=np.float32),
         "rewards": np.zeros(2, dtype=np.float32),
     }
@@ -143,7 +143,7 @@ def test_first_step_done(backend_name, tmp_path):
 
 
 def test_infos_batched(backend_name, tmp_path):
-    schema = DatasetSchema.infer({**_example(), "infos": {"success": np.zeros(2, dtype=np.bool_)}})
+    schema = DatasetSchema.infer({**_example(), "infos": {"success": np.zeros(3, dtype=np.bool_)}})
     schema.fields["success"].optional = True
     path = None if backend_name == "memory" else str(tmp_path / "vec")
     dataset = Dataset.create(schema, path=path, backend=backend_name)
@@ -182,7 +182,7 @@ def test_terminated_and_truncated_same_step(backend_name, tmp_path):
 
 def test_bare_array_observations():
     example = {
-        "observations": np.zeros((2, 3), dtype=np.float32),
+        "observations": np.zeros((3, 3), dtype=np.float32),
         "actions": np.zeros((2, 2), dtype=np.float32),
         "rewards": np.zeros(2, dtype=np.float32),
     }

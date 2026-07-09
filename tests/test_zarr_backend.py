@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from episodata import Dataset, DatasetSchema, FieldSpec, Selection, SpaceSpec
-from tests.conftest import make_episode
+from tests.conftest import make_episode, make_steps
 
 pytest.importorskip("zarr")
 
@@ -28,8 +28,11 @@ def assert_episode_equal(dataset, episode_id, episode):
     segment = dataset.episode(episode_id).read()
     for key, expected in episode["observations"].items():
         assert np.array_equal(segment[key], expected)
-    assert np.array_equal(segment["action"], episode["actions"]["action"])
-    assert np.array_equal(segment["reward"], episode["rewards"])
+    # row 0 is the synthesized dummy reset row; the source's action/reward follow
+    assert np.array_equal(segment["action"][1:], episode["actions"]["action"])
+    assert not segment["action"][0].any()
+    assert np.array_equal(segment["reward"][1:], episode["rewards"])
+    assert segment["reward"][0] == 0
 
 
 def test_reopen_round_trip(tmp_path):
@@ -51,7 +54,7 @@ def test_open_dispatches_npz_from_manifest(tmp_path):
 
 def test_ongoing_episode_survives_flush_and_reopen(tmp_path):
     dataset, _ = make_dataset(tmp_path / "ds")
-    first = make_episode(4, seed=2)
+    first = make_steps(4, seed=2)
     first.pop("terminated")
     writer = dataset.new_episode()
     writer.add_steps(first)
@@ -61,7 +64,7 @@ def test_ongoing_episode_survives_flush_and_reopen(tmp_path):
     assert reopened.episode(writer.episode_id).ongoing
     assert reopened.episode(writer.episode_id).length == 4
 
-    second = make_episode(3, seed=3)
+    second = make_steps(3, seed=3)
     second.pop("terminated")
     reopened.add_steps(writer.episode_id, second)
     reopened.end_episode(writer.episode_id, terminated=True)
@@ -76,7 +79,7 @@ def test_ongoing_episode_survives_flush_and_reopen(tmp_path):
 
 def test_crash_recovery_resets_unspilled_episode(tmp_path):
     dataset, _ = make_dataset(tmp_path / "ds")
-    steps = make_episode(4, seed=2)
+    steps = make_steps(4, seed=2)
     steps.pop("terminated")
     writer = dataset.new_episode()
     writer.add_steps(steps)
@@ -95,8 +98,8 @@ def test_crash_recovery_resets_unspilled_episode(tmp_path):
 
 def test_out_of_order_finalize_of_interleaved_episodes(tmp_path):
     dataset, _ = make_dataset(tmp_path / "ds")
-    a = make_episode(5, seed=4)
-    b = make_episode(6, seed=5)
+    a = make_steps(5, seed=4)
+    b = make_steps(6, seed=5)
     a.pop("terminated"), b.pop("terminated")
     writer_a = dataset.new_episode()
     writer_a.add_steps(a)
@@ -106,8 +109,14 @@ def test_out_of_order_finalize_of_interleaved_episodes(tmp_path):
     dataset.end_episode(writer_a.episode_id, terminated=True)
 
     reopened = Dataset.open(str(tmp_path / "ds"))
-    assert_episode_equal(reopened, writer_a.episode_id, a)
-    assert_episode_equal(reopened, writer_b.episode_id, b)
+    # a and b were appended as raw steps via a bare new_episode(), with no
+    # synthesized reset row, so compare directly (no shift)
+    for episode_id, source in ((writer_a.episode_id, a), (writer_b.episode_id, b)):
+        segment = reopened.episode(episode_id).read()
+        for key, expected in source["observations"].items():
+            assert np.array_equal(segment[key], expected)
+        assert np.array_equal(segment["action"], source["actions"]["action"])
+        assert np.array_equal(segment["reward"], source["rewards"])
     assert reopened.episode(writer_b.episode_id).truncated
 
 
@@ -166,7 +175,7 @@ def test_empty_episode_finalizes(tmp_path):
 def test_copy_to_migrates_npz_to_zarr(tmp_path):
     episodes = [make_episode(10, seed=0), make_episode(7, seed=1, terminated=False)]
     source = Dataset.from_episodes(episodes, path=str(tmp_path / "npz"))
-    ongoing = make_episode(4, seed=2)
+    ongoing = make_steps(4, seed=2)
     ongoing.pop("terminated")
     writer = source.new_episode()
     writer.add_steps(ongoing)

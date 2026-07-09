@@ -17,7 +17,7 @@ import numpy as np
 from .backends.base import Selection, StorageBackend, get_backend, normalize_payload
 from .episode import Episode, EpisodeWriter
 from .sampling import SegmentDataset, SegmentStream
-from .normalize import SEP, normalize_episode, normalize_step, shift_action_out
+from .normalize import SEP, normalize_episode, normalize_full_episode, normalize_step, shift_action_out
 from .schema import DatasetSchema
 from .vector import VectorWriter
 
@@ -67,7 +67,7 @@ class Dataset:
         if first is None:
             raise ValueError("from_episodes requires at least one episode; use Dataset.create for an empty dataset")
         if schema is None:
-            schema = DatasetSchema.infer(first)
+            schema = DatasetSchema.infer(first, alignment=alignment)
         dataset = cls.create(schema, path=path, backend=backend, **backend_options)
         dataset.add_episode(first, alignment=alignment)
         for episode in episodes:
@@ -113,14 +113,19 @@ class Dataset:
     def add_episode(self, episode: Mapping[str, Any], alignment: str = "action_in") -> Episode:
         """Add one complete episode from a canonical episode dict.
 
-        ``alignment="action_out"`` accepts episodes where row ``t`` holds the
-        action taken *at* observation ``t`` (D4RL-style); they are shifted to
-        the canonical action-in alignment at write time.
+        Under the default ``alignment="action_in"``, observations carry one
+        entry more than actions/rewards (the reset row plus one entry per
+        step); the reset row's dummy zero action/reward is synthesized here,
+        mirroring ``new_episode``. ``alignment="action_out"`` instead accepts
+        episodes where row ``t`` holds the action taken *at* observation ``t``
+        (D4RL-style, all fields equal length); they are shifted to the
+        canonical action-in alignment at write time.
         """
-        normalized = normalize_episode(episode)
-        if alignment == "action_out":
-            normalized = shift_action_out(normalized)
-        elif alignment != "action_in":
+        if alignment == "action_in":
+            normalized = normalize_full_episode(episode)
+        elif alignment == "action_out":
+            normalized = shift_action_out(normalize_episode(episode))
+        else:
             raise ValueError(f"unknown alignment {alignment!r}")
         episode_id = self.backend.create_episode()
         self._append_fields(episode_id, normalized.fields)

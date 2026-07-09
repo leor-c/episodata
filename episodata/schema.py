@@ -206,15 +206,25 @@ class DatasetSchema:
     # -- inference (automatic mode) -----------------------------------------
 
     @classmethod
-    def infer(cls, example_episode: Mapping[str, Any]) -> DatasetSchema:
+    def infer(cls, example_episode: Mapping[str, Any], alignment: str = "action_in") -> DatasetSchema:
         """Infer a schema from one example episode (canonical episode dict).
 
         Shape and dtype are inferred reliably. Space keys are generated from
         structural heuristics and can be renamed later (hybrid mode).
+        ``alignment`` must match what will be passed to
+        ``Dataset.add_episode``/``from_episodes`` for this example: under the
+        default ``"action_in"``, observations carry one entry more than
+        actions/rewards (see ``normalize_full_episode``); ``"action_out"``
+        expects all fields at one equal length.
         """
-        from .normalize import normalize_episode
+        from .normalize import normalize_episode, normalize_full_episode
 
-        normalized = normalize_episode(example_episode)
+        if alignment == "action_in":
+            normalized = normalize_full_episode(example_episode)
+        elif alignment == "action_out":
+            normalized = normalize_episode(example_episode)
+        else:
+            raise ValueError(f"unknown alignment {alignment!r}")
         spaces: dict[str, SpaceSpec] = {}
         fields: list[FieldSpec] = []
         for key, array in normalized.fields.items():
@@ -222,7 +232,7 @@ class DatasetSchema:
             per_step = array[0]
             spec = _infer_space(role, per_step)
             space_key = _assign_space(spaces, spec)
-            fields.append(FieldSpec(key=key, space=space_key, role=role))
+            fields.append(FieldSpec(key=key, space=space_key, role=role, optional=(role == "info")))
         _collapse_single_action_space(spaces, fields)
         return cls(spaces=spaces.values(), fields=fields)
 

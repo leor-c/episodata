@@ -44,11 +44,17 @@ touching a single line downstream.
 
 ## One convention worth knowing: action-in alignment
 
-Every episode has one length `T`. Row `t` holds the action and reward that
-*led to* observation `t` — row 0 is the reset row (`env.reset()`'s
+Every stored episode has one length `T`. Row `t` holds the action and reward
+that *led to* observation `t` — row 0 is the reset row (`env.reset()`'s
 observation, with a dummy zero action/reward). This is the natural shape of
 a Gymnasium rollout, and it makes `sample_transitions` unambiguous:
 `(obs[t], action[t+1], reward[t+1], obs[t+1], done[t+1])`.
+
+Bulk import mirrors that shape at the input boundary rather than asking you
+to build it: `observations` carries one entry more than `actions`/`rewards`
+(the reset row, then one entry per step), and the dummy zero action/reward
+at row 0 is synthesized for you — you never construct it by hand, the same
+as `dataset.new_episode(obs)` online.
 
 `terminated` and `truncated` are separate signals, exactly as in Gymnasium.
 D4RL-style "action-out" data (action paired with the observation it was
@@ -63,9 +69,9 @@ import numpy as np
 from episodata import Dataset
 
 episodes = [{
-    "observations": {
-        "front_camera": np.zeros((100, 3, 64, 64), dtype=np.uint8),
-        "state": np.zeros((100, 7), dtype=np.float32),
+    "observations": {  # one entry more than actions/rewards: the reset row, then 100 steps
+        "front_camera": np.zeros((101, 3, 64, 64), dtype=np.uint8),
+        "state": np.zeros((101, 7), dtype=np.float32),
     },
     "actions": np.zeros((100, 4), dtype=np.float32),
     "rewards": np.zeros(100, dtype=np.float32),

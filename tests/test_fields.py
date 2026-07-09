@@ -37,18 +37,18 @@ def test_trivial_space_unwraps_to_array(dataset):
 
 def test_lone_same_named_field_unwraps():
     episode = {
-        "observations": {"image": np.zeros((4, 3, 8, 8), dtype=np.uint8)},
+        "observations": {"image": np.zeros((5, 3, 8, 8), dtype=np.uint8)},
         "actions": np.zeros((4, 2), dtype=np.float32),
         "rewards": np.zeros(4, dtype=np.float32),
     }
     seg = Dataset.from_episodes([episode]).episode(0).read()
     assert isinstance(seg.image, np.ndarray)
-    assert seg.image.shape == (4, 3, 8, 8)
+    assert seg.image.shape == (5, 3, 8, 8)
 
 
 def test_shadowed_space_stays_navigable():
     episode = {
-        "observations": {"o": np.zeros((4, 3), dtype=np.float32)},
+        "observations": {"o": np.zeros((5, 3), dtype=np.float32)},
         "actions": {
             "action": np.zeros((4, 2), dtype=np.float32),
             "action2": np.ones((4, 2), dtype=np.float32),
@@ -57,10 +57,11 @@ def test_shadowed_space_stays_navigable():
     with pytest.warns(UserWarning, match="shadowed by space"):
         ds = Dataset.from_episodes([episode])
     seg = ds.episode(0).read()
-    # with siblings the space wins attribute lookup and stays navigable
+    # with siblings the space wins attribute lookup and stays navigable;
+    # storage includes the synthesized dummy reset row, so shape is (5, 2)
     assert isinstance(seg.action, SpaceView)
-    assert seg.action.action2.shape == (4, 2)
-    assert seg.action.action.shape == (4, 2)
+    assert seg.action.action2.shape == (5, 2)
+    assert seg.action.action.shape == (5, 2)
     assert set(seg.space_view("action")) == {"action", "action2"}
     # flat item access still reads the shadowed field itself
     assert isinstance(seg["action"], np.ndarray)

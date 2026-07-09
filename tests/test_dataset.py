@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from episodata import Dataset, DatasetSchema
-from tests.conftest import make_episode
+from tests.conftest import make_episode, make_steps
 
 
 def test_basic_properties(dataset):
@@ -17,7 +17,8 @@ def test_segment_matches_source(dataset):
     source = make_episode(10, seed=0)
     segment = dataset.episode(0).segment(2, 6, fields=["front_camera", "reward"])
     assert np.array_equal(segment["front_camera"], source["observations"]["front_camera"][2:6])
-    assert np.array_equal(segment["reward"], source["rewards"][2:6])
+    # row t (t >= 1) holds the reward that led to it, i.e. source["rewards"][t - 1]
+    assert np.array_equal(segment["reward"], source["rewards"][1:5])
     step = dataset.episode(0).step(-1)
     assert np.array_equal(step["state"], source["observations"]["state"][-1])
 
@@ -125,14 +126,14 @@ def test_truncated_step_signal(dataset):
 
 def test_segment_with_terminal_flag_finalizes(dataset):
     writer = dataset.new_episode()
-    writer.add_steps(make_episode(3, seed=2, terminated=True))
+    writer.add_steps(make_steps(3, seed=2, terminated=True))
     assert dataset.episode(writer.episode_id).terminated
 
 
 def test_flags_validated_against_position_and_length():
     with pytest.raises(ValueError, match="final step"):
         Dataset.from_episodes(
-            [{**make_episode(5), "terminated": [False, True, False, False, False]}]
+            [{**make_episode(5), "terminated": [False, True, False, False]}]
         )
     with pytest.raises(ValueError, match="length"):
         Dataset.from_episodes([{**make_episode(5), "terminated": [False, True]}])
@@ -181,7 +182,7 @@ def test_resume_after_reopen(tmp_path):
     path = str(tmp_path / "ds")
     dataset = Dataset.from_episodes([make_episode(4)], path=path)
     writer = dataset.new_episode()
-    writer.add_steps(make_episode(3, seed=7, terminated=False))
+    writer.add_steps(make_steps(3, seed=7, terminated=False))
     episode_id = writer.episode_id
     dataset.flush()
 
@@ -215,13 +216,13 @@ def test_ongoing_episode_survives_reopen(tmp_path):
     path = str(tmp_path / "ds")
     dataset = Dataset.from_episodes([make_episode(4)], path=path)
     writer = dataset.new_episode()
-    writer.add_steps(make_episode(3, seed=7, terminated=False))
+    writer.add_steps(make_steps(3, seed=7, terminated=False))
     dataset.flush()
 
     reopened = Dataset.open(path)
     episode = reopened.episode(writer.episode_id)
     assert episode.ongoing and len(episode) == 3
-    source = make_episode(3, seed=7)
+    source = make_steps(3, seed=7)
     assert np.array_equal(episode.read()["state"], source["observations"]["state"])
 
 

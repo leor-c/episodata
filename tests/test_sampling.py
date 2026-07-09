@@ -43,9 +43,10 @@ def test_sequential_scan_covers_all_segments(dataset):
     segments = [s for batch in stream for s in batch["reward"]]
     # episode lengths 10 and 7 -> (10-4+1) + (7-4+1) = 11 segments
     assert len(segments) == 11
-    source = make_episode(10, seed=0)["rewards"]
-    assert np.array_equal(segments[0], source[0:4])
-    assert np.array_equal(segments[6], source[6:10])
+    # row 0 is the synthesized dummy reset row; source["rewards"][t - 1] follows at row t
+    stored = np.concatenate([[0], make_episode(10, seed=0)["rewards"]]).astype(np.float32)
+    assert np.array_equal(segments[0], stored[0:4])
+    assert np.array_equal(segments[6], stored[6:10])
 
 
 def test_terminated_flag_only_on_final_step(dataset):
@@ -63,11 +64,12 @@ def test_terminated_flag_only_on_final_step(dataset):
 def test_transition_alignment_action_in():
     # action-in: row t holds the action/reward that led to obs t, so a
     # transition's action/reward come from row t + 1
-    t = np.arange(8, dtype=np.float32)
+    t_obs = np.arange(9, dtype=np.float32)  # T+1 rows: 0..8
+    t_steps = np.arange(1, 9, dtype=np.float32)  # T steps: the action/reward leading to rows 1..8
     episode = {
-        "observations": {"x": t[:, None]},
-        "actions": (10 * t)[:, None],
-        "rewards": 100 * t,
+        "observations": {"x": t_obs[:, None]},
+        "actions": (10 * t_steps)[:, None],
+        "rewards": 100 * t_steps,
         "terminated": True,
     }
     dataset = Dataset.from_episodes([episode])
@@ -141,17 +143,19 @@ def test_full_segments_have_all_true_mask(dataset):
 
 def test_transition_sampling_skips_short_episodes():
     # a length-1 episode must not fabricate a transition into padding
-    t = np.arange(4, dtype=np.float32)
+    t_obs = np.arange(5, dtype=np.float32)
+    t_steps = np.arange(1, 5, dtype=np.float32)
     long_episode = {
-        "observations": {"x": t[:, None]},
-        "actions": (10 * t)[:, None],
-        "rewards": 100 * t,
+        "observations": {"x": t_obs[:, None]},
+        "actions": (10 * t_steps)[:, None],
+        "rewards": 100 * t_steps,
         "terminated": True,
     }
+    # just the reset row, no steps taken
     short_episode = {
         "observations": {"x": np.zeros((1, 1), np.float32) + 50},
-        "actions": np.zeros((1, 1), np.float32),
-        "rewards": np.zeros(1, np.float32),
+        "actions": np.zeros((0, 1), np.float32),
+        "rewards": np.zeros(0, np.float32),
         "terminated": True,
     }
     dataset = Dataset.from_episodes([long_episode, short_episode])
