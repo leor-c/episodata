@@ -23,16 +23,18 @@ ROLES = ("observation", "action", "reward", "info")
 
 @dataclasses.dataclass
 class SpaceSpec:
-    """Shared logical format of a set of fields.
+    """Shared logical format of a set of fields of one role.
 
     Fields in the same space share shape/dtype guarantees, which enables
     structural operations such as stacking, validation and generic
-    transforms.
+    transforms. A space belongs to exactly one role — merging fields
+    across roles is meaningless even when their formats coincide.
     """
 
     key: str
     shape: tuple[int, ...]
     dtype: str
+    role: str = "observation"
     low: float | None = None
     high: float | None = None
     layout: str | None = None
@@ -41,6 +43,8 @@ class SpaceSpec:
     def __post_init__(self) -> None:
         self.shape = tuple(int(s) for s in self.shape)
         self.dtype = np.dtype(self.dtype).name
+        if self.role not in ROLES:
+            raise ValueError(f"unknown role {self.role!r}, expected one of {ROLES}")
 
     def matches(self, per_step_array: np.ndarray) -> bool:
         """Whether a per-step value structurally belongs to this space."""
@@ -58,6 +62,7 @@ class SpaceSpec:
             key=d["key"],
             shape=tuple(d["shape"]),
             dtype=d["dtype"],
+            role=d.get("role", "observation"),
             low=d.get("low"),
             high=d.get("high"),
             layout=d.get("layout"),
@@ -116,6 +121,12 @@ class DatasetSchema:
             if field.space not in self.spaces:
                 raise ValueError(
                     f"field {field.key!r} references unknown space {field.space!r}"
+                )
+            space_role = self.spaces[field.space].role
+            if field.role != space_role:
+                raise ValueError(
+                    f"field {field.key!r} has role {field.role!r} but its space "
+                    f"{field.space!r} has role {space_role!r}"
                 )
             self.fields[field.key] = field
 
@@ -238,9 +249,9 @@ def _infer_space(role: str, per_step: np.ndarray) -> SpaceSpec:
     """Build a candidate SpaceSpec for one field from a per-step example.
 
     Structural inference (shape/dtype/bounds/layout) is identical for all
-    roles; the role only prefixes the generated key so that spaces never
-    merge across roles — stacking observations with actions is meaningless
-    even when their formats coincide.
+    roles. The role is recorded on the space — spaces never merge across
+    roles, which ``_assign_space`` enforces — and prefixes the generated
+    key for non-observation roles so keys stay unique and readable.
     """
     shape = tuple(per_step.shape)
     dtype = per_step.dtype
@@ -264,7 +275,11 @@ def _infer_space(role: str, per_step: np.ndarray) -> SpaceSpec:
         base = "reward"
     elif role == "action":
         base = f"action_{base}"
-    return SpaceSpec(key=base, shape=shape, dtype=dtype.name, low=low, high=high, layout=layout)
+    elif role == "info":
+        base = f"info_{base}"
+    return SpaceSpec(
+        key=base, shape=shape, dtype=dtype.name, role=role, low=low, high=high, layout=layout
+    )
 
 
 def _collapse_single_action_space(
@@ -288,11 +303,12 @@ def _collapse_single_action_space(
 
 
 def _assign_space(spaces: dict[str, SpaceSpec], candidate: SpaceSpec) -> str:
-    """Reuse a structurally identical space or register the candidate under a
-    unique generated key."""
+    """Reuse a structurally identical space of the same role or register the
+    candidate under a unique generated key."""
     for key, existing in spaces.items():
         if (
-            existing.shape == candidate.shape
+            existing.role == candidate.role
+            and existing.shape == candidate.shape
             and existing.dtype == candidate.dtype
             and key.rstrip("0123456789_") == candidate.key
         ):

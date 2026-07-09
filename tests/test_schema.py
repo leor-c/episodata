@@ -62,6 +62,22 @@ def test_action_space_naming():
     assert schema.field("state").space != schema.field("action").space
 
 
+def test_info_never_merges_into_observation_space():
+    # obs and info fields with identical formats stay in role-bound spaces
+    episode = {
+        "initial_observation": {"pos": np.zeros(3, dtype=np.float32)},
+        "observations": {"pos": np.zeros((4, 3), dtype=np.float32)},
+        "initial_info": {"debug_vec": np.zeros(3, dtype=np.float32)},
+        "infos": {"debug_vec": np.zeros((4, 3), dtype=np.float32)},
+    }
+    schema = DatasetSchema.infer(episode)
+    assert schema.field("pos").space == "vector"
+    assert schema.field("debug_vec").space == "info_vector"
+    assert schema.space("vector").role == "observation"
+    assert schema.space("info_vector").role == "info"
+    assert schema.fields_in_space("vector") == ["pos"]
+
+
 def test_same_named_field_and_space_never_warn():
     # role-first access with explicit .space() leaves nothing to shadow: a
     # field named after its space is unambiguous, siblings or not
@@ -91,6 +107,22 @@ def test_declared_schema_validates_references():
             spaces=[SpaceSpec(key="image", shape=(3, 8, 8), dtype="uint8")],
             fields=[FieldSpec(key="cam", space="nope")],
         )
+
+
+def test_declared_schema_rejects_role_mismatch():
+    with pytest.raises(ValueError, match="role"):
+        DatasetSchema(
+            spaces=[SpaceSpec(key="vector", shape=(3,), dtype="float32")],
+            fields=[FieldSpec(key="debug", space="vector", role="info")],
+        )
+
+
+def test_space_role_roundtrips_and_defaults():
+    schema = DatasetSchema.infer(make_episode(5))
+    restored = DatasetSchema.from_json(schema.to_json())
+    assert restored.space("action").role == "action"
+    # schemas persisted before spaces carried a role default to observation
+    assert SpaceSpec.from_dict({"key": "v", "shape": [3], "dtype": "float32"}).role == "observation"
 
 
 def test_rename_space_updates_fields():
