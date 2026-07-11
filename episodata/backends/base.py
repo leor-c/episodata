@@ -36,35 +36,6 @@ class Selection:
         return self.stop - self.start
 
 
-@dataclasses.dataclass
-class SpaceBlock:
-    """Space-oriented payload: several same-space fields stacked along axis 0.
-
-    Backends may return this instead of per-field arrays when a contiguous
-    stacked representation is cheaper. The high-level layer normalizes both
-    forms into the same observation interface (see :func:`normalize_payload`).
-    """
-
-    space: str
-    keys: tuple[str, ...]
-    data: np.ndarray
-
-
-#: What backends may return from ``read_fields``.
-Payload = Mapping[str, np.ndarray] | Sequence[SpaceBlock]
-
-
-def normalize_payload(payload: Payload) -> dict[str, np.ndarray]:
-    """Normalize field-oriented or space-oriented payloads to field -> array."""
-    if isinstance(payload, Mapping):
-        return dict(payload)
-    out: dict[str, np.ndarray] = {}
-    for block in payload:
-        for i, key in enumerate(block.keys):
-            out[key] = block.data[i]
-    return out
-
-
 class StorageBackend(abc.ABC):
     """Abstract storage backend.
 
@@ -111,7 +82,7 @@ class StorageBackend(abc.ABC):
 
     @abc.abstractmethod
     def write_schema(self, schema: DatasetSchema) -> None:
-        """Persist an updated schema (e.g. after a space rename)."""
+        """Persist an updated schema (e.g. after a field rename)."""
 
     # -- episode index -------------------------------------------------------
 
@@ -135,11 +106,13 @@ class StorageBackend(abc.ABC):
     # -- reads ---------------------------------------------------------------
 
     @abc.abstractmethod
-    def read_fields(self, field_ids: Sequence[str], selection: Selection) -> Payload:
+    def read_fields(
+        self, field_ids: Sequence[str], selection: Selection
+    ) -> Mapping[str, np.ndarray]:
         """Read the given logical fields over a temporal selection.
 
-        Returns arrays shaped ``[selection.length, *space.shape]`` in the
-        logical dtype/layout, either field-oriented or as SpaceBlocks.
+        Returns arrays shaped ``[selection.length, *field.shape]`` in the
+        logical dtype/layout, keyed by field id.
         """
 
     # -- writes (online append) ----------------------------------------------
@@ -157,7 +130,7 @@ class StorageBackend(abc.ABC):
     ) -> None:
         """Append one step to each of several ongoing episodes.
 
-        Arrays are shaped ``[N, *space.shape]``; row ``i`` goes to
+        Arrays are shaped ``[N, *field.shape]``; row ``i`` goes to
         ``episode_ids[i]``. The default implementation loops the
         per-episode append; backends may override with a vectorized write
         (an override must call ``_touch()`` at least once).

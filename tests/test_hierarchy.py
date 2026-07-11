@@ -43,8 +43,9 @@ def test_nested_ingest_flattens_to_path_keys(backend_name, dataset_path):
     assert "inventory/stone" in dataset.schema.fields
     assert dataset.schema.field("keyboard/w").role == "action"
     assert dataset.schema.field("inventory/stone").role == "observation"
-    # structurally identical siblings still share a space
-    assert dataset.schema.field("keyboard/w").space == dataset.schema.field("keyboard/jump").space
+    # each flat path key carries its own declared format
+    assert dataset.schema.field("keyboard/w").shape == dataset.schema.field("keyboard/jump").shape
+    assert dataset.schema.field("keyboard/w").dtype == dataset.schema.field("keyboard/jump").dtype
 
 
 def test_group_access(backend_name, dataset_path):

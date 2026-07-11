@@ -10,7 +10,6 @@ from .backends import (
     MemoryBackend,
     NpzDirectoryBackend,
     Selection,
-    SpaceBlock,
     StorageBackend,
     ZarrBackend,
     get_backend,
@@ -18,9 +17,9 @@ from .backends import (
 )
 from .dataset import Dataset
 from .episode import Episode, EpisodeWriter
-from .fields import FieldGroup, Fields, SpaceView
+from .fields import FieldGroup, Fields
 from .sampling import SegmentDataset, SegmentStream
-from .schema import DatasetSchema, FieldSpec, SpaceSpec
+from .schema import DatasetSchema, FieldSpec
 from .segment import Batch, Segment
 from .vector import VectorWriter
 
@@ -42,9 +41,6 @@ __all__ = [
     "SegmentDataset",
     "SegmentStream",
     "Selection",
-    "SpaceBlock",
-    "SpaceSpec",
-    "SpaceView",
     "StorageBackend",
     "VectorWriter",
     "ZarrBackend",

@@ -5,7 +5,7 @@ Layout::
     <root>/
         manifest.json            # backend name + logical schema (constant size)
         data.zarr/
-            fields/<field_key>   # [T_total, *space.shape], chunked on time
+            fields/<field_key>   # [T_total, *field.shape], chunked on time
             index/start          # [N] int64, global start row (-1 while ongoing)
             index/length         # [N] int64
             index/terminated     # [N] bool
@@ -42,7 +42,7 @@ import zarr
 
 from ..schema import DatasetSchema
 from ._buffers import EpisodeBuffers, atomic_write
-from .base import Payload, Selection, StorageBackend, register_backend
+from .base import Selection, StorageBackend, register_backend
 
 _FORMAT_VERSION = 1
 _INDEX_CHUNK = 65536
@@ -96,9 +96,9 @@ class ZarrBackend(StorageBackend):
         field_keys = schema.field_keys()
         group.attrs["field_keys"] = field_keys
         for key in field_keys:
-            space = schema.space_of(key)
-            shape = tuple(space.shape)
-            step_bytes = max(1, np.dtype(space.dtype).itemsize * math.prod(shape))
+            spec = schema.field(key)
+            shape = tuple(spec.shape)
+            step_bytes = max(1, np.dtype(spec.dtype).itemsize * math.prod(shape))
             chunk_t = max(1, min(chunk_bytes // step_bytes, _MAX_CHUNK_STEPS))
             shards = None
             if shard_bytes is not None:
@@ -109,7 +109,7 @@ class ZarrBackend(StorageBackend):
                 shape=(0, *shape),
                 chunks=(chunk_t, *shape),
                 shards=shards,
-                dtype=space.dtype,
+                dtype=spec.dtype,
             )
         # Fill values encode a freshly created, still-empty ongoing episode,
         # so an index row is valid even if a crash prevents its point write.
@@ -198,7 +198,9 @@ class ZarrBackend(StorageBackend):
 
     # -- reads ---------------------------------------------------------------
 
-    def read_fields(self, field_ids: Sequence[str], selection: Selection) -> Payload:
+    def read_fields(
+        self, field_ids: Sequence[str], selection: Selection
+    ) -> Mapping[str, np.ndarray]:
         episode_id = selection.episode_id
         if episode_id in self._buffers:
             return self._buffers.read(field_ids, selection)

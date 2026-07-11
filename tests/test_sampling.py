@@ -14,7 +14,6 @@ def test_segment_batch_shapes(dataset):
     )
     batch = stream.sample()
     assert batch.obs.front_camera.shape == (6, 4, 3, 8, 8)
-    assert batch.obs.space("image").front_camera.shape == (6, 4, 3, 8, 8)
     assert batch.obs["state"].shape == (6, 4, 5)
     assert batch.terminated.shape == (6, 4)
 

@@ -5,8 +5,8 @@ above it:
 
 | Module | Layer | Contents |
 |---|---|---|
-| `schema.py` | logical spec | `SpaceSpec`, `FieldSpec`, `DatasetSchema` — serializable, authoritative, no array data |
-| `fields.py` | generic field views | `Fields` (one role's flat named arrays + field/group/space access), `SpaceView`, `FieldGroup` |
+| `schema.py` | logical spec | `FieldSpec`, `DatasetSchema` — serializable, authoritative, no array data |
+| `fields.py` | generic field views | `Fields` (one role's flat named arrays + field/group access), `FieldGroup` |
 | `segment.py` | temporal containers | `Segment` (transition-aligned fields + per-transition flags), `Batch` (leading batch dim, context/target slicing) |
 | `episode.py` | trajectory views | `Episode` (lazy read view), `EpisodeWriter` (online append handle) |
 | `vector.py` | trajectory views | `VectorWriter` — N parallel envs, next-step autoreset |
@@ -18,8 +18,8 @@ above it:
 
 The spec layer (`schema.py`) never touches array data; the field views
 (`fields.py`) are runtime views that depend on the schema, not the other way
-around. Storage sees only flat field keys and temporal selections — spaces,
-groups, roles and segments are all reconstructed above the storage boundary.
+around. Storage sees only flat field keys and temporal selections — groups,
+roles and segments are all reconstructed above the storage boundary.
 
 ## Key signatures
 
@@ -60,7 +60,6 @@ class Dataset:
     def sample_transitions(self, batch_size, fields=None, seed=None,
                            filter=None) -> Batch    # time-squeezed, arrays [B, ...]
 
-    def rename_space(self, old: str, new: str) -> None
     def rename_field(self, old: str, new: str) -> None
     def copy_to(self, path=None, backend=None, **backend_options) -> Dataset
     def flush(self) -> None
@@ -120,7 +119,6 @@ class Fields(Mapping):            # one role's fields, handed out by a Segment
     fields["front_camera"]        # flat field access (also "keyboard/w" paths)
     fields.front_camera           # field attribute access
     fields.keyboard.w             # group attribute access -> FieldGroup
-    def space(self, key) -> SpaceView   # explicit space access
     schema: DatasetSchema
 
 class Segment:                    # arrays [L, ...] (or unbatched single step)
@@ -162,20 +160,17 @@ class SegmentStream:              # infinite shuffled stream / sequential scan
 **Schema** — the persistent logical spec:
 
 ```python
-SpaceSpec(key, shape, dtype, role, low=None, high=None, layout=None, metadata={})
-FieldSpec(key, space, role="observation", semantic_type=None, optional=False, metadata={})
-# a space belongs to one role; each field's role must match its space's role
+FieldSpec(key, shape, dtype, role="observation", low=None, high=None,
+          layout=None, semantic_type=None, optional=False, metadata={})
+# each field carries its own per-step format — the per-leaf model of a
+# Gymnasium Dict space
 
 class DatasetSchema:
-    def __init__(self, spaces: Iterable[SpaceSpec], fields: Iterable[FieldSpec])
+    def __init__(self, fields: Iterable[FieldSpec])
     @classmethod
     def infer(cls, example_episode, alignment=None) -> DatasetSchema
     def field(self, key) -> FieldSpec
-    def space(self, key) -> SpaceSpec
-    def space_of(self, field_key) -> SpaceSpec
     def field_keys(self, role=None) -> list[str]
-    def fields_in_space(self, space_key) -> list[str]
-    def rename_space(self, old, new) -> None
     def rename_field(self, old, new) -> None
     def to_dict() / from_dict() / to_json() / from_json()
 ```
@@ -199,7 +194,7 @@ class StorageBackend(ABC):
     num_episodes: int
     revision: int                 # bumped on every write; drives SegmentDataset.refresh
     def write_schema(self, schema) -> None
-    def read_fields(self, field_ids, selection) -> Payload   # field dicts or SpaceBlocks
+    def read_fields(self, field_ids, selection) -> Mapping[str, np.ndarray]
     def create_episode(self) -> int
     def append_steps(self, episode_id, fields) -> None
     def append_steps_batch(self, episode_ids, fields) -> None   # one row per episode

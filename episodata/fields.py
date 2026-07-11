@@ -3,10 +3,9 @@
 Observations, actions, rewards and infos are all the same thing
 structurally: named arrays with hierarchical access. :class:`Fields` is the
 generic container — flat storage, with groups (from ``/`` in field keys)
-reconstructed on access and spaces (from the schema) reached explicitly via
-:meth:`Fields.space`. Arrays may carry arbitrary leading dims (single step,
-``[T, ...]`` segment, or ``[B, T, ...]`` batch) — the grouping logic is the
-same.
+reconstructed on access. Arrays may carry arbitrary leading dims (single
+step, ``[T, ...]`` segment, or ``[B, T, ...]`` batch) — the grouping logic
+is the same.
 """
 
 from __future__ import annotations
@@ -19,49 +18,7 @@ import numpy as np
 from .normalize import SEP
 
 if TYPE_CHECKING:
-    from .schema import DatasetSchema, SpaceSpec
-
-
-class SpaceView(Mapping):
-    """Read-only view of the fields of one space present in a container."""
-
-    def __init__(self, space: "SpaceSpec", data: dict[str, np.ndarray]):
-        self._space = space
-        self._data = data
-
-    @property
-    def spec(self) -> "SpaceSpec":
-        return self._space
-
-    def __getattr__(self, name: str) -> np.ndarray:
-        if name.startswith("_"):
-            raise AttributeError(name)
-        try:
-            return self._data[name]
-        except KeyError:
-            raise AttributeError(
-                f"space {self._space.key!r} has no field {name!r}; "
-                f"available: {list(self._data)}"
-            ) from None
-
-    def __getitem__(self, key: str) -> np.ndarray:
-        return self._data[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def stacked(self, axis: int = 0) -> np.ndarray:
-        """Stack all fields of this space along a new axis.
-
-        Valid because fields in one space share shape and dtype.
-        """
-        return np.stack(list(self._data.values()), axis=axis)
-
-    def __repr__(self) -> str:
-        return f"SpaceView({self._space.key!r}, fields={list(self._data)})"
+    from .schema import DatasetSchema
 
 
 class FieldGroup(Mapping):
@@ -117,7 +74,7 @@ class FieldGroup(Mapping):
 
 
 class Fields(Mapping):
-    """Flat named arrays of one role, with field, group and space access.
+    """Flat named arrays of one role, with field and group access.
 
     Segments hand one of these out per role (``seg.observation``,
     ``seg.action``, ...). Access is explicit — a name is a field or a group,
@@ -129,15 +86,9 @@ class Fields(Mapping):
         obs.inventory.stone           # group attribute access
         for key, value in obs.inventory.items(): ...
 
-    Spaces (schema-level shared shape/dtype groups) are reached only through
-    the explicit :meth:`space` method, never by attribute name::
-
-        obs.space("image").front_camera
-        obs.space("image").stacked()
-
-    Method names (``space``, ``schema``, and the Mapping methods ``keys`` /
-    ``items`` / ``values`` / ``get``) win attribute lookup over a same-named
-    field; brackets always reach the field.
+    Method names (``schema`` and the Mapping methods ``keys`` / ``items`` /
+    ``values`` / ``get``) win attribute lookup over a same-named field;
+    brackets always reach the field.
     """
 
     def __init__(self, data: Mapping[str, np.ndarray], schema: "DatasetSchema"):
@@ -172,20 +123,6 @@ class Fields(Mapping):
     def _is_group(self, name: str) -> bool:
         head = f"{name}{SEP}"
         return any(k.startswith(head) for k in self._data)
-
-    def space(self, space_key: str) -> SpaceView:
-        """The :class:`SpaceView` of a space's fields present here.
-
-        Raises ``KeyError`` for a space key the schema does not know, even
-        when no member field is present in this container.
-        """
-        spec = self._schema.space(space_key)
-        members = {
-            k: self._data[k]
-            for k in self._schema.fields_in_space(space_key)
-            if k in self._data
-        }
-        return SpaceView(spec, members)
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._data)

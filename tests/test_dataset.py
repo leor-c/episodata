@@ -43,11 +43,12 @@ def test_persistence_roundtrip(tmp_path):
 def test_schema_not_reinferred_on_open(tmp_path):
     path = str(tmp_path / "ds")
     dataset = Dataset.from_episodes([make_episode(6)], path=path)
-    dataset.rename_space("vector", "proprio")
+    dataset.schema.field("state").semantic_type = "proprio"
+    dataset.backend.write_schema(dataset.schema)
     reopened = Dataset.open(path)
-    assert "proprio" in reopened.schema.spaces
+    assert reopened.schema.field("state").semantic_type == "proprio"
     seg = reopened.episode(0).segment(0, 2)
-    assert seg.obs.space("proprio").state.shape == (2, 5)
+    assert seg.obs.state.shape == (2, 5)
 
 
 def test_online_append(backend_name, dataset_path):
@@ -246,8 +247,9 @@ def test_ongoing_episode_survives_reopen(tmp_path):
 
 def test_declared_schema_mode(backend_name, dataset_path):
     schema = DatasetSchema.infer(make_episode(3))
-    schema.rename_space("vector", "proprio")
+    schema.field("state").semantic_type = "proprio"
     dataset = Dataset.from_episodes(
         [make_episode(5)], schema=schema, path=dataset_path, backend=backend_name
     )
-    assert dataset.episode(0).segment(0, 2).obs.space("proprio").state.shape == (2, 5)
+    assert dataset.schema.field("state").semantic_type == "proprio"
+    assert dataset.episode(0).segment(0, 2).obs.state.shape == (2, 5)

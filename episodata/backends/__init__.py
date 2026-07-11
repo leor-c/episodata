@@ -5,12 +5,9 @@ backends register themselves with :func:`register_backend`.
 """
 
 from .base import (
-    Payload,
     Selection,
-    SpaceBlock,
     StorageBackend,
     get_backend,
-    normalize_payload,
     register_backend,
     register_missing_backend,
 )
@@ -31,11 +28,8 @@ __all__ = [
     "MemoryBackend",
     "NpzDirectoryBackend",
     "ZarrBackend",
-    "Payload",
     "Selection",
-    "SpaceBlock",
     "StorageBackend",
     "get_backend",
-    "normalize_payload",
     "register_backend",
 ]

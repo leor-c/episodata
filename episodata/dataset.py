@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .backends.base import Selection, StorageBackend, get_backend, normalize_payload
+from .backends.base import Selection, StorageBackend, get_backend
 from .episode import Episode, EpisodeWriter
 from .sampling import SegmentDataset, SegmentStream
 from .normalize import (
@@ -203,8 +203,7 @@ class Dataset:
         for key, spec in self.schema.fields.items():
             if key in fields or spec.optional or spec.role == "observation":
                 continue
-            space = self.schema.space_of(key)
-            fields[key] = np.zeros((1, *space.shape), dtype=space.dtype)
+            fields[key] = np.zeros((1, *spec.shape), dtype=spec.dtype)
         self._append_fields(episode_id, fields)
 
     def add_step(self, episode_id: int, step: Mapping[str, Any]) -> None:
@@ -261,12 +260,6 @@ class Dataset:
                 raise ValueError(f"episode {episode_id} is finalized")
         self.backend.append_steps_batch(list(episode_ids), fields)
 
-    def rename_space(self, old: str, new: str) -> None:
-        """Hybrid mode: rename an (inferred) space and persist the schema."""
-        schema = self.schema
-        schema.rename_space(old, new)
-        self.backend.write_schema(schema)
-
     def rename_field(self, old: str, new: str) -> None:
         raise NotImplementedError(
             "renaming a field changes its stable storage identifier; "
@@ -304,7 +297,7 @@ class Dataset:
                         payload = self.backend.read_fields([key], selection)
                     except KeyError:  # field absent from this episode
                         continue
-                    fields.update(normalize_payload(payload))
+                    fields.update(payload)
                 destination.backend.append_steps(destination_id, fields)
             if not self.backend.episode_ongoing(episode_id):
                 destination.backend.finalize_episode(
@@ -425,15 +418,14 @@ class Dataset:
         for key, arr in fields.items():
             if key not in schema.fields:
                 raise KeyError(f"field {key!r} is not in the schema")
-            space = schema.space_of(key)
+            spec = schema.field(key)
             arr = np.asarray(arr)
-            expected = (len(arr), *space.shape)
+            expected = (len(arr), *spec.shape)
             if tuple(arr.shape) != expected:
                 raise ValueError(
-                    f"field {key!r}: got shape {tuple(arr.shape)}, expected {expected} "
-                    f"(space {space.key!r})"
+                    f"field {key!r}: got shape {tuple(arr.shape)}, expected {expected}"
                 )
-            out[key] = arr.astype(space.dtype, copy=False)
+            out[key] = arr.astype(spec.dtype, copy=False)
         missing = [
             k for k, f in schema.fields.items() if k not in out and not f.optional
         ]

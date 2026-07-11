@@ -3,7 +3,7 @@ import warnings
 import numpy as np
 import pytest
 
-from episodata import Dataset, Fields, Segment, SpaceView
+from episodata import Dataset, Fields, Segment
 
 
 def test_access_patterns(dataset):
@@ -12,14 +12,8 @@ def test_access_patterns(dataset):
     assert seg.obs["front_camera"].shape == (4, 3, 8, 8)
     # role → field attribute access
     assert seg.obs.front_camera.shape == (4, 3, 8, 8)
-    # explicit space access
-    assert seg.obs.space("image").front_camera.shape == (4, 3, 8, 8)
-    assert np.array_equal(seg.obs.space("image")["front_camera"], seg.obs["front_camera"])
-    # iteration over a space
-    keys = dict(seg.obs.space("image").items())
-    assert set(keys) == {"front_camera", "wrist_camera"}
-    # stacking valid within a space
-    assert seg.obs.space("image").stacked().shape == (2, 4, 3, 8, 8)
+    # iteration over a role
+    assert set(seg.obs.keys()) == {"front_camera", "wrist_camera", "state"}
 
 
 def test_role_aliases_are_identical(dataset):
@@ -92,19 +86,14 @@ def test_no_top_level_shortcuts(dataset):
         _ = seg.image
     with pytest.raises(TypeError):
         _ = seg["front_camera"]
-    assert not hasattr(seg, "space_view")
 
 
 def test_unknown_access_raises(dataset):
     seg = dataset.episode(0).segment(0, 2)
     with pytest.raises(AttributeError):
         _ = seg.obs.nonexistent
-    with pytest.raises(AttributeError):
-        _ = seg.obs.space("image").nonexistent
     with pytest.raises(KeyError):
         _ = seg.obs["nonexistent"]
-    with pytest.raises(KeyError):
-        _ = seg.obs.space("nonexistent")
 
 
 def test_empty_role_is_empty_view(dataset):
@@ -133,7 +122,6 @@ def test_episode_methods_return_segments(dataset):
 def test_role_views(dataset):
     segment = dataset.episode(0).segment(0, 4)
     assert set(segment.observations) == {"front_camera", "wrist_camera", "state"}
-    assert isinstance(segment.obs.space("image"), SpaceView)
     assert segment.action.shape == (4, 2)
     assert segment.reward.shape == (4,)
 

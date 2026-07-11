@@ -10,7 +10,6 @@ def test_len_and_getitem_shapes(dataset):
     assert len(segments) == 11
     segment = segments[0]
     assert segment.obs.front_camera.shape == (4, 3, 8, 8)
-    assert segment.obs.space("image").front_camera.shape == (4, 3, 8, 8)
     assert segment.obs["state"].shape == (4, 5)
     assert segment.terminated.shape == (4,)
     assert segment.truncated.shape == (4,)

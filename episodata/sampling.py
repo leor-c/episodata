@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
-from .backends.base import Selection, StorageBackend, normalize_payload
+from .backends.base import Selection, StorageBackend
 from .segment import Batch, Segment
 
 if TYPE_CHECKING:
@@ -72,8 +72,8 @@ def _pad_axis0(arr: np.ndarray, pad: int, mode: str) -> np.ndarray:
 def read_segment(
     backend: StorageBackend, fields: Sequence[str], selection: Selection
 ) -> dict[str, np.ndarray]:
-    """Read one segment's fields from the backend, normalized to a flat dict."""
-    return normalize_payload(backend.read_fields(fields, selection))
+    """Read one segment's fields from the backend as a flat dict."""
+    return dict(backend.read_fields(fields, selection))
 
 
 def pad_segment(

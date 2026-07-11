@@ -7,7 +7,7 @@ the storage backend, never the API.
 
 The design separates three layers:
 
-1. **Logical data model** — schema, spaces, fields, observations
+1. **Logical data model** — schema, fields, observations
 2. **Query and sampling API** — episodes, segments, transitions
 3. **Storage implementation** — a replaceable `StorageBackend`
 
@@ -65,16 +65,13 @@ seg.next_observation.front_camera  # ... and the obs each action produced
 seg.action, seg.reward         # [8, ...] bare arrays resolve directly
 seg.terminated                 # [8] done flag of each transition
 
-seg.obs.space("image").front_camera   # explicit space access
-seg.obs.space("image").stacked()      # same-space fields stack safely
 for key, value in seg.obs.items(): ...
 ```
 
 Singular, plural and the `obs` shorthand are aliases for the same object:
 `seg.observation` == `seg.obs` == `seg.observations`, and likewise
 `seg.next_obs`, `seg.actions`, `seg.rewards`, `seg.infos`. There are no
-other shortcuts — spaces are reached only through `.space(key)`, and fields
-only through their role.
+other shortcuts — fields are reached only through their role.
 
 `seg.obs[k]`, `seg.next_obs[k]` and the action/reward arrays are zero-copy
 views into one shared row buffer — pixel observations are never duplicated.
@@ -107,17 +104,22 @@ transitions.action.keyboard.w                # groups work everywhere
 ```
 
 Within a role view a name is an exact field or a group prefix — nothing
-else. Method names (`space`, `schema`, `keys`/`items`/`values`/`get`) win
-attribute lookup over a same-named field; brackets always reach the field.
+else. Method names (`schema`, `keys`/`items`/`values`/`get`) win attribute
+lookup over a same-named field; brackets always reach the field.
 
-### Schema: automatic, declared, or hybrid
+### Schema: automatic or declared
+
+Every field carries its own per-step format — shape, dtype and optional
+bounds/layout — the same per-leaf model as a Gymnasium `Dict` space:
 
 ```python
-from episodata import DatasetSchema, SpaceSpec, FieldSpec
+from episodata import DatasetSchema, FieldSpec
 
 schema = DatasetSchema.infer(example_episode)      # automatic (shape/dtype reliable)
-schema = DatasetSchema(spaces=[...], fields=[...]) # declared
-dataset.rename_space("vector", "proprio")          # hybrid: refine + persist
+schema = DatasetSchema(fields=[
+    FieldSpec("front_camera", shape=(3, 64, 64), dtype="uint8", low=0, high=255),
+    FieldSpec("action", shape=(4,), dtype="float32", role="action"),
+])                                                 # declared
 ```
 
 The persisted schema is authoritative — it is never re-inferred on reopen.
@@ -272,8 +274,6 @@ of logical field ids over temporal selections, online appends, and the
 episode index. Everything physical — layout, shards, codecs, chunking,
 caching, decoding — is the backend's concern; it must expose the *logical*
 representation declared by the schema regardless of physical encoding.
-Backends may return field-oriented dicts or space-oriented `SpaceBlock`s;
-the high-level layer normalizes both.
 
 ```python
 from episodata import StorageBackend, register_backend

@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 
 from ..schema import DatasetSchema
-from .base import Payload, Selection, StorageBackend, register_backend
+from .base import Selection, StorageBackend, register_backend
 
 
 @dataclasses.dataclass
@@ -66,7 +66,9 @@ class MemoryBackend(StorageBackend):
     def episode_ongoing(self, episode_id: int) -> bool:
         return self._episodes[episode_id].ongoing
 
-    def read_fields(self, field_ids: Sequence[str], selection: Selection) -> Payload:
+    def read_fields(
+        self, field_ids: Sequence[str], selection: Selection
+    ) -> Mapping[str, np.ndarray]:
         episode = self._episodes[selection.episode_id]
         self._consolidate(episode)
         out: dict[str, np.ndarray] = {}

@@ -31,7 +31,7 @@ import numpy as np
 
 from ..schema import DatasetSchema
 from ._buffers import EpisodeBuffers, atomic_write
-from .base import Payload, Selection, StorageBackend, register_backend
+from .base import Selection, StorageBackend, register_backend
 
 _FORMAT_VERSION = 1
 
@@ -127,7 +127,9 @@ class NpzDirectoryBackend(StorageBackend):
 
     # -- reads ---------------------------------------------------------------
 
-    def read_fields(self, field_ids: Sequence[str], selection: Selection) -> Payload:
+    def read_fields(
+        self, field_ids: Sequence[str], selection: Selection
+    ) -> Mapping[str, np.ndarray]:
         episode_id = selection.episode_id
         if episode_id in self._buffers:
             return self._buffers.read(field_ids, selection)

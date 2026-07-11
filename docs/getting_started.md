@@ -23,10 +23,10 @@ logical data model  →  query & sampling API  →  storage backend
 ```
 
 1. **Logical data model.** A dataset is episodes plus a schema. The schema
-   groups named *fields* (`front_camera`, `state`, `action`, `reward`, ...)
-   into *spaces* — fields that share a shape and dtype, like the two camera
-   feeds of a robot. The schema is data, not code: it's inferred
-   automatically, refined, or declared up front.
+   is named *fields* (`front_camera`, `state`, `action`, `reward`, ...),
+   each declaring its own per-step shape and dtype — like the keys of a
+   Gymnasium `Dict` space. The schema is data, not code: it's inferred
+   automatically or declared up front.
 
 2. **Query and sampling API.** You read data through `Episode` and
    `Segment`, and sample it through `segment_stream` /
@@ -90,7 +90,6 @@ seg = dataset.episode(0).segment(0, 8)   # transitions [0, 8) of episode 0
 seg.obs.front_camera       # [8, ...] the obs each action was taken at
 seg.next_obs.front_camera  # ... and the obs each action produced
 seg.action, seg.reward     # bare action/reward arrays resolve directly
-seg.obs.space("image")     # explicit space access — grouped by shared shape/dtype
 seg.terminated             # [8] done flag of each transition
 ```
 

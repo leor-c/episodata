@@ -1,98 +1,59 @@
-import warnings
-
 import numpy as np
 import pytest
 
-from episodata import DatasetSchema, FieldSpec, SpaceSpec
+from episodata import DatasetSchema, FieldSpec
 from tests.conftest import make_episode
 
 
-def test_infer_groups_structurally_identical_fields():
+def test_infer_declares_per_field_format():
     schema = DatasetSchema.infer(make_episode(5))
-    assert schema.field("front_camera").space == schema.field("wrist_camera").space
-    assert schema.field("state").space != schema.field("front_camera").space
-    image_space = schema.space_of("front_camera")
-    assert image_space.shape == (3, 8, 8)
-    assert image_space.dtype == "uint8"
-    assert image_space.layout == "CHW"
-    assert (image_space.low, image_space.high) == (0, 255)
-    assert schema.space_of("state").shape == (5,)
+    front = schema.field("front_camera")
+    assert front.shape == (3, 8, 8)
+    assert front.dtype == "uint8"
+    assert front.layout == "CHW"
+    assert (front.low, front.high) == (0, 255)
+    assert schema.field("wrist_camera").shape == (3, 8, 8)
+    assert schema.field("state").shape == (5,)
+    assert schema.field("state").layout is None
     assert schema.field("action").role == "action"
     assert schema.field("reward").role == "reward"
 
 
-def test_infer_separates_same_base_different_spec():
+def test_infer_image_layouts():
     episode = {
         "initial_observation": {
-            "small": np.zeros((3, 8, 8), dtype=np.uint8),
-            "large": np.zeros((3, 16, 16), dtype=np.uint8),
+            "chw": np.zeros((3, 8, 8), dtype=np.uint8),
+            "hwc": np.zeros((8, 8, 3), dtype=np.uint8),
+            "gray": np.zeros((8, 8), dtype=np.uint8),
         },
         "observations": {
-            "small": np.zeros((4, 3, 8, 8), dtype=np.uint8),
-            "large": np.zeros((4, 3, 16, 16), dtype=np.uint8),
+            "chw": np.zeros((4, 3, 8, 8), dtype=np.uint8),
+            "hwc": np.zeros((4, 8, 8, 3), dtype=np.uint8),
+            "gray": np.zeros((4, 8, 8), dtype=np.uint8),
         },
     }
     schema = DatasetSchema.infer(episode)
-    assert schema.field("small").space != schema.field("large").space
+    assert schema.field("chw").layout == "CHW"
+    assert schema.field("hwc").layout == "HWC"
+    assert schema.field("gray").layout is None
+    assert (schema.field("gray").low, schema.field("gray").high) == (0, 255)
 
 
-def test_action_space_naming():
-    # a single action component keeps the plain "action" space
-    schema = DatasetSchema.infer(make_episode(5))
-    assert schema.field("action").space == "action"
-    # structurally distinct components get role-prefixed structural names
-    episode = {
-        "initial_observation": {"o": np.zeros(3, dtype=np.float32)},
-        "observations": {"o": np.zeros((4, 3), dtype=np.float32)},
-        "actions": {
-            "camera": np.zeros((4, 2), dtype=np.float32),
-            "jump": np.zeros(4, dtype=np.uint8),
-        },
-    }
-    schema = DatasetSchema.infer(episode)
-    assert schema.field("camera").space == "action_vector"
-    assert schema.field("jump").space == "action_scalar"
-    # actions never merge into observation spaces, even with matching format
-    same_format = {
-        "initial_observation": {"state": np.zeros(2, dtype=np.float32)},
-        "observations": {"state": np.zeros((4, 2), dtype=np.float32)},
-        "actions": np.zeros((4, 2), dtype=np.float32),
-    }
-    schema = DatasetSchema.infer(same_format)
-    assert schema.field("state").space != schema.field("action").space
-
-
-def test_info_never_merges_into_observation_space():
-    # obs and info fields with identical formats stay in role-bound spaces
+def test_infer_roles_and_optionality():
     episode = {
         "initial_observation": {"pos": np.zeros(3, dtype=np.float32)},
         "observations": {"pos": np.zeros((4, 3), dtype=np.float32)},
+        "actions": np.zeros((4, 2), dtype=np.float32),
         "initial_info": {"debug_vec": np.zeros(3, dtype=np.float32)},
         "infos": {"debug_vec": np.zeros((4, 3), dtype=np.float32)},
     }
     schema = DatasetSchema.infer(episode)
-    assert schema.field("pos").space == "vector"
-    assert schema.field("debug_vec").space == "info_vector"
-    assert schema.space("vector").role == "observation"
-    assert schema.space("info_vector").role == "info"
-    assert schema.fields_in_space("vector") == ["pos"]
-
-
-def test_same_named_field_and_space_never_warn():
-    # role-first access with explicit .space() leaves nothing to shadow: a
-    # field named after its space is unambiguous, siblings or not
-    episode = {
-        "initial_observation": {"o": np.zeros(3, dtype=np.float32)},
-        "observations": {"o": np.zeros((4, 3), dtype=np.float32)},
-        "actions": {
-            "action": np.zeros((4, 2), dtype=np.float32),
-            "action2": np.zeros((4, 2), dtype=np.float32),
-        },
-    }
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        DatasetSchema.infer(episode)
-        DatasetSchema.infer(make_episode(5))
+    assert schema.field("pos").role == "observation"
+    assert schema.field("action").role == "action"
+    assert schema.field("debug_vec").role == "info"
+    assert schema.field("debug_vec").optional
+    assert not schema.field("pos").optional
+    assert schema.field_keys("observation") == ["pos"]
 
 
 def test_json_roundtrip():
@@ -101,33 +62,36 @@ def test_json_roundtrip():
     assert restored.to_dict() == schema.to_dict()
 
 
-def test_declared_schema_validates_references():
-    with pytest.raises(ValueError, match="unknown space"):
-        DatasetSchema(
-            spaces=[SpaceSpec(key="image", shape=(3, 8, 8), dtype="uint8", role="observation")],
-            fields=[FieldSpec(key="cam", space="nope")],
-        )
+def test_declared_schema_rejects_duplicate_keys():
+    spec = FieldSpec(key="cam", shape=(3, 8, 8), dtype="uint8")
+    with pytest.raises(ValueError, match="duplicate field key"):
+        DatasetSchema(fields=[spec, spec])
 
 
-def test_declared_schema_rejects_role_mismatch():
-    with pytest.raises(ValueError, match="role"):
-        DatasetSchema(
-            spaces=[SpaceSpec(key="vector", shape=(3,), dtype="float32", role="observation")],
-            fields=[FieldSpec(key="debug", space="vector", role="info")],
-        )
+def test_field_spec_rejects_unknown_role():
+    with pytest.raises(ValueError, match="unknown role"):
+        FieldSpec(key="x", shape=(3,), dtype="float32", role="nope")
 
 
-def test_space_role_roundtrips():
+def test_from_dict_rejects_other_schema_versions():
+    d = DatasetSchema.infer(make_episode(5)).to_dict()
+    d["schema_version"] = 1
+    with pytest.raises(ValueError, match="unsupported schema version"):
+        DatasetSchema.from_dict(d)
+
+
+def test_rename_field():
     schema = DatasetSchema.infer(make_episode(5))
-    restored = DatasetSchema.from_json(schema.to_json())
-    assert restored.space("action").role == "action"
-    # role is part of a space's identity — never defaulted, on load either
-    with pytest.raises(KeyError):
-        SpaceSpec.from_dict({"key": "v", "shape": [3], "dtype": "float32"})
+    schema.rename_field("state", "proprio")
+    assert "state" not in schema.fields
+    assert schema.field("proprio").shape == (5,)
+    assert schema.field("proprio").key == "proprio"
+    with pytest.raises(ValueError, match="already exists"):
+        schema.rename_field("proprio", "action")
 
 
-def test_rename_space_updates_fields():
+def test_validate_step_value():
     schema = DatasetSchema.infer(make_episode(5))
-    schema.rename_space("vector", "proprio")
-    assert schema.field("state").space == "proprio"
-    assert "vector" not in schema.spaces
+    schema.validate_step_value("state", np.zeros(5, dtype=np.float32))
+    with pytest.raises(ValueError, match="does not match declared shape"):
+        schema.validate_step_value("state", np.zeros(6, dtype=np.float32))

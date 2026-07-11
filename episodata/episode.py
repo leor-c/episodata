@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .backends.base import Selection, normalize_payload
+from .backends.base import Selection
 from .segment import Segment
 
 if TYPE_CHECKING:
@@ -87,12 +87,12 @@ class Episode:
         if self._backend.episode_length(self.id) == 0:
             schema = self._dataset.schema
             rows = {
-                k: np.zeros((0, *schema.space_of(k).shape), dtype=schema.space_of(k).dtype)
+                k: np.zeros((0, *schema.field(k).shape), dtype=schema.field(k).dtype)
                 for k in fields
             }
         else:
             payload = self._backend.read_fields(fields, Selection(self.id, start, stop + 1))
-            rows = normalize_payload(payload)
+            rows = dict(payload)
         terminated = np.zeros(stop - start, dtype=bool)
         truncated = np.zeros(stop - start, dtype=bool)
         if stop == length and stop > start:

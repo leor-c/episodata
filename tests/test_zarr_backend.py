@@ -9,7 +9,7 @@ import os
 import numpy as np
 import pytest
 
-from episodata import Dataset, DatasetSchema, FieldSpec, Selection, SpaceSpec
+from episodata import Dataset, DatasetSchema, FieldSpec, Selection
 from tests.conftest import make_episode, make_steps
 
 pytest.importorskip("zarr")
@@ -141,11 +141,10 @@ def test_shard_bytes_packs_chunks(tmp_path):
 
 def test_missing_optional_field_raises_keyerror(tmp_path):
     schema = DatasetSchema(
-        spaces=[SpaceSpec("vec", (2,), "float32", "observation")],
         fields=[
-            FieldSpec("a", "vec"),
-            FieldSpec("b", "vec", optional=True),
-        ],
+            FieldSpec("a", (2,), "float32"),
+            FieldSpec("b", (2,), "float32", optional=True),
+        ]
     )
     dataset = Dataset.create(schema, path=str(tmp_path / "ds"), backend="zarr")
     values = np.ones((3, 2), dtype=np.float32)
