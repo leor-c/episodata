@@ -60,7 +60,6 @@ class Dataset:
     def sample_transitions(self, batch_size, fields=None, seed=None,
                            filter=None) -> Batch    # time-squeezed, arrays [B, ...]
 
-    def rename_field(self, old: str, new: str) -> None
     def copy_to(self, path=None, backend=None, **backend_options) -> Dataset
     def flush(self) -> None
     def close(self) -> None
@@ -167,7 +166,7 @@ class SegmentStream:              # infinite shuffled stream / sequential scan
 
 ```python
 FieldSpec(key, shape, dtype, role="observation", low=None, high=None,
-          layout=None, semantic_type=None, optional=False, metadata={})
+          layout=None, optional=False)
 # each field carries its own per-step format — the per-leaf model of a
 # Gymnasium Dict space
 
@@ -177,7 +176,6 @@ class DatasetSchema:
     def infer(cls, example_episode, alignment=None) -> DatasetSchema
     def field(self, key) -> FieldSpec
     def field_keys(self, role=None) -> list[str]
-    def rename_field(self, old, new) -> None
     def to_dict() / from_dict() / to_json() / from_json()
 ```
 
@@ -199,7 +197,6 @@ class StorageBackend(ABC):
     schema: DatasetSchema
     num_episodes: int
     revision: int                 # bumped on every write; drives SegmentDataset.refresh
-    def write_schema(self, schema) -> None
     def read_fields(self, field_ids, selection) -> Mapping[str, np.ndarray]
     def create_episode(self) -> int
     def append_steps(self, episode_id, fields) -> None

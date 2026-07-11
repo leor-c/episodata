@@ -103,10 +103,6 @@ class NpzDirectoryBackend(StorageBackend):
     def schema(self) -> DatasetSchema:
         return self._schema
 
-    def write_schema(self, schema: DatasetSchema) -> None:
-        self._schema = schema
-        self.flush()
-
     # -- episode index -------------------------------------------------------
 
     @property

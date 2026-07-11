@@ -41,12 +41,16 @@ def test_persistence_roundtrip(tmp_path):
 
 
 def test_schema_not_reinferred_on_open(tmp_path):
+    # Declared bounds inference would never produce: seeing them after
+    # reopen proves the persisted schema is read, not re-inferred.
     path = str(tmp_path / "ds")
-    dataset = Dataset.from_episodes([make_episode(6)], path=path)
-    dataset.schema.field("state").semantic_type = "proprio"
-    dataset.backend.write_schema(dataset.schema)
+    schema = DatasetSchema.infer(make_episode(6))
+    schema.field("state").low = -1.0
+    schema.field("state").high = 1.0
+    Dataset.from_episodes([make_episode(6)], schema=schema, path=path)
     reopened = Dataset.open(path)
-    assert reopened.schema.field("state").semantic_type == "proprio"
+    assert reopened.schema.field("state").low == -1.0
+    assert reopened.schema.field("state").high == 1.0
     seg = reopened.episode(0).segment(0, 2)
     assert seg.obs.state.shape == (2, 5)
 
@@ -247,11 +251,11 @@ def test_ongoing_episode_survives_reopen(tmp_path):
 
 def test_declared_schema_mode(backend_name, dataset_path):
     schema = DatasetSchema.infer(make_episode(3))
-    schema.field("state").semantic_type = "proprio"
+    schema.field("state").low = -1.0
     dataset = Dataset.from_episodes(
         [make_episode(5)], schema=schema, path=dataset_path, backend=backend_name
     )
-    assert dataset.schema.field("state").semantic_type == "proprio"
+    assert dataset.schema.field("state").low == -1.0
     assert dataset.episode(0).segment(0, 2).obs.state.shape == (2, 5)
 
 

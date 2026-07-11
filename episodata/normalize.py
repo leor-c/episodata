@@ -97,7 +97,8 @@ def _flatten(episode: Mapping[str, Any]) -> tuple[dict[str, np.ndarray], dict[st
     if unknown:
         raise ValueError(
             f"unknown episode keys {unknown}; expected observations/actions/"
-            f"rewards/terminated/truncated/infos"
+            f"rewards/terminated/truncated/infos (initial_/final_observation "
+            f"boundary keys apply only to whole-episode import)"
         )
 
     fields: dict[str, np.ndarray] = {}
@@ -209,34 +210,7 @@ def normalize_full_episode(episode: Mapping[str, Any]) -> NormalizedEpisode:
         raise ValueError(
             f"action-in bulk import requires {_INITIAL_OBS_KEY!r} (the reset observation)"
         )
-    reset_step: dict[str, Any] = {"observations": episode[_INITIAL_OBS_KEY]}
-    if _INITIAL_INFO_KEY in episode:
-        reset_step["infos"] = episode[_INITIAL_INFO_KEY]
-    reset = normalize_step(reset_step)
-
-    core_episode = {
-        k: v for k, v in episode.items() if k not in (_INITIAL_OBS_KEY, _INITIAL_INFO_KEY)
-    }
-    core = normalize_episode(core_episode)
-
-    _validate_boundary_row(reset, core, _INITIAL_OBS_KEY, _INITIAL_INFO_KEY)
-
-    fields: dict[str, np.ndarray] = {}
-    for key, arr in core.fields.items():
-        if key in reset.fields:
-            fields[key] = np.concatenate([reset.fields[key], arr])
-        else:  # action/reward: no reset-row counterpart, zero-fill row 0
-            padded = np.zeros((len(arr) + 1, *arr.shape[1:]), dtype=arr.dtype)
-            padded[1:] = arr
-            fields[key] = padded
-
-    return NormalizedEpisode(
-        fields=fields,
-        roles=core.roles,
-        length=core.length + 1,
-        terminated=core.terminated,
-        truncated=core.truncated,
-    )
+    return _splice_boundary_row(episode, _INITIAL_OBS_KEY, _INITIAL_INFO_KEY, prepend=True)
 
 
 def normalize_action_out_episode(episode: Mapping[str, Any]) -> NormalizedEpisode:
@@ -248,31 +222,43 @@ def normalize_action_out_episode(episode: Mapping[str, Any]) -> NormalizedEpisod
     final action/reward are dropped (their resulting observation was never
     recorded, so no transition could use them).
     """
-    core_episode = {
-        k: v for k, v in episode.items() if k not in (_FINAL_OBS_KEY, _FINAL_INFO_KEY)
-    }
-    core = normalize_episode(core_episode)
-
     if _FINAL_OBS_KEY not in episode:
         if _FINAL_INFO_KEY in episode:
             raise ValueError(f"{_FINAL_INFO_KEY!r} requires {_FINAL_OBS_KEY!r}")
-        return shift_action_out(core)
+        return shift_action_out(normalize_episode(episode))
+    return _splice_boundary_row(episode, _FINAL_OBS_KEY, _FINAL_INFO_KEY, prepend=False)
 
-    final_step: dict[str, Any] = {"observations": episode[_FINAL_OBS_KEY]}
-    if _FINAL_INFO_KEY in episode:
-        final_step["infos"] = episode[_FINAL_INFO_KEY]
-    final_row = normalize_step(final_step)
 
-    _validate_boundary_row(final_row, core, _FINAL_OBS_KEY, _FINAL_INFO_KEY)
+def _splice_boundary_row(
+    episode: Mapping[str, Any], obs_key: str, info_key: str, *, prepend: bool
+) -> NormalizedEpisode:
+    """Normalize a bulk-import dict and splice its boundary row into place.
+
+    The boundary row (observation, optional info) goes before the core
+    arrays for action-in (the reset row) or after them for action-out (the
+    final row). Either way the episode gains one row and the action/reward
+    columns, which have no boundary-row counterpart, land on rows ``1:`` —
+    row 0 becomes the dummy zero action/reward of the reset row.
+    """
+    row_step: dict[str, Any] = {"observations": episode[obs_key]}
+    if info_key in episode:
+        row_step["infos"] = episode[info_key]
+    row = normalize_step(row_step)
+
+    core = normalize_episode(
+        {k: v for k, v in episode.items() if k not in (obs_key, info_key)}
+    )
+    _validate_boundary_row(row, core, obs_key, info_key)
 
     fields: dict[str, np.ndarray] = {}
     for key, arr in core.fields.items():
-        if key in final_row.fields:
-            fields[key] = np.concatenate([arr, final_row.fields[key]])
-        else:  # action/reward: shift one row later; nothing dropped this time
-            shifted = np.zeros((len(arr) + 1, *arr.shape[1:]), dtype=arr.dtype)
-            shifted[1:] = arr
-            fields[key] = shifted
+        if key in row.fields:
+            parts = [row.fields[key], arr] if prepend else [arr, row.fields[key]]
+            fields[key] = np.concatenate(parts)
+        else:  # action/reward: zero-fill row 0, the reset row
+            padded = np.zeros((len(arr) + 1, *arr.shape[1:]), dtype=arr.dtype)
+            padded[1:] = arr
+            fields[key] = padded
 
     return NormalizedEpisode(
         fields=fields,

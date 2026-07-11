@@ -80,16 +80,6 @@ def test_from_dict_rejects_other_schema_versions():
         DatasetSchema.from_dict(d)
 
 
-def test_rename_field():
-    schema = DatasetSchema.infer(make_episode(5))
-    schema.rename_field("state", "proprio")
-    assert "state" not in schema.fields
-    assert schema.field("proprio").shape == (5,)
-    assert schema.field("proprio").key == "proprio"
-    with pytest.raises(ValueError, match="already exists"):
-        schema.rename_field("proprio", "action")
-
-
 def test_resolve_fields():
     schema = DatasetSchema.infer(make_episode(5))
     assert schema.resolve_fields(None) == list(schema.fields)

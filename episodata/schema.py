@@ -42,20 +42,13 @@ class FieldSpec:
     low: float | None = None
     high: float | None = None
     layout: str | None = None
-    semantic_type: str | None = None
     optional: bool = False
-    metadata: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.shape = tuple(int(s) for s in self.shape)
         self.dtype = np.dtype(self.dtype).name
         if self.role not in ROLES:
             raise ValueError(f"unknown role {self.role!r}, expected one of {ROLES}")
-
-    def matches(self, per_step_array: np.ndarray) -> bool:
-        """Whether a per-step value structurally belongs to this field."""
-        arr = np.asarray(per_step_array)
-        return tuple(arr.shape) == self.shape and arr.dtype == np.dtype(self.dtype)
 
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
@@ -72,9 +65,7 @@ class FieldSpec:
             low=d.get("low"),
             high=d.get("high"),
             layout=d.get("layout"),
-            semantic_type=d.get("semantic_type"),
             optional=d.get("optional", False),
-            metadata=dict(d.get("metadata", {})),
         )
 
 
@@ -119,15 +110,6 @@ class DatasetSchema:
                 )
             resolved.extend(members)
         return resolved
-
-    # -- refinement (hybrid mode) -----------------------------------------
-
-    def rename_field(self, old: str, new: str) -> None:
-        if new in self.fields:
-            raise ValueError(f"field key {new!r} already exists")
-        field = self.fields.pop(old)
-        field.key = new
-        self.fields[new] = field
 
     # -- validation --------------------------------------------------------
 

@@ -24,12 +24,12 @@ batches — one source of truth for segment semantics.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
-from .backends.base import Selection, StorageBackend
+from .backends.base import Selection
 from .segment import Batch, Segment
 
 if TYPE_CHECKING:
@@ -67,13 +67,6 @@ def _pad_axis0(arr: np.ndarray, pad: int, mode: str) -> np.ndarray:
     """Zero-pad ``arr`` along axis 0, after ("suffix") or before ("prefix")."""
     widths = [(pad, 0) if mode == "prefix" else (0, pad)] + [(0, 0)] * (arr.ndim - 1)
     return np.pad(arr, widths)
-
-
-def read_segment(
-    backend: StorageBackend, fields: Sequence[str], selection: Selection
-) -> dict[str, np.ndarray]:
-    """Read one segment's fields from the backend as a flat dict."""
-    return dict(backend.read_fields(fields, selection))
 
 
 def pad_segment(
@@ -246,7 +239,7 @@ class SegmentDataset:
 
     def __getitem__(self, i: int) -> Segment:
         selection, terminal_offset = self._index.resolve(i)
-        rows = read_segment(self.dataset.backend, self.fields, selection)
+        rows = dict(self.dataset.backend.read_fields(self.fields, selection))
         rows, mask = pad_segment(rows, selection.length - 1, self.segment_length, self.pad)
         terminated = np.zeros(self.segment_length, dtype=bool)
         truncated = np.zeros(self.segment_length, dtype=bool)

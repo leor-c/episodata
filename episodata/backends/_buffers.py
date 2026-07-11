@@ -1,8 +1,9 @@
-"""In-memory buffers for ongoing episodes, shared by persistent backends.
+"""In-memory per-episode field buffers, shared by the backends.
 
-Ongoing (not yet finalized) episodes are buffered in memory as per-field
-chunk lists. Backends spill them to ``.npz`` files on flush for crash
-recovery and write them into their final layout on finalize.
+Episodes are buffered in memory as per-field chunk lists. The persistent
+backends use them for ongoing (not yet finalized) episodes — spilled to
+``.npz`` files on flush for crash recovery, written into the final layout
+on finalize; :class:`MemoryBackend` keeps every episode here for good.
 """
 
 from __future__ import annotations

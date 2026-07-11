@@ -80,10 +80,6 @@ class StorageBackend(abc.ABC):
     def schema(self) -> DatasetSchema:
         """The persisted logical schema."""
 
-    @abc.abstractmethod
-    def write_schema(self, schema: DatasetSchema) -> None:
-        """Persist an updated schema (e.g. after a field rename)."""
-
     # -- episode index -------------------------------------------------------
 
     @property

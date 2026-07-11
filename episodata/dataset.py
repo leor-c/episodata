@@ -16,7 +16,6 @@ import numpy as np
 
 from .backends.base import Selection, StorageBackend, get_backend
 from .episode import Episode, EpisodeWriter
-from .sampling import SegmentDataset, SegmentStream
 from .normalize import (
     normalize_action_out_episode,
     normalize_episode,
@@ -24,6 +23,7 @@ from .normalize import (
     normalize_step,
     resolve_alignment,
 )
+from .sampling import SegmentDataset, SegmentStream
 from .schema import DatasetSchema
 from .vector import VectorWriter
 
@@ -199,7 +199,10 @@ class Dataset:
             step["infos"] = infos
         fields = normalize_step(step).fields
         for key, spec in self.schema.fields.items():
-            if key in fields or spec.optional or spec.role == "observation":
+            # Only action/reward get the dummy zero row: observations were
+            # just passed in, and an info has no universal zero sentinel —
+            # a required info missing here fails validation like any write.
+            if key in fields or spec.optional or spec.role in ("observation", "info"):
                 continue
             fields[key] = np.zeros((1, *spec.shape), dtype=spec.dtype)
         self._append_fields(episode_id, fields)
@@ -261,12 +264,6 @@ class Dataset:
         for episode_id in episode_ids:
             self._require_ongoing(episode_id)
         self.backend.append_steps_batch(list(episode_ids), fields)
-
-    def rename_field(self, old: str, new: str) -> None:
-        raise NotImplementedError(
-            "renaming a field changes its stable storage identifier; "
-            "not supported by the v1 backends"
-        )
 
     def flush(self) -> None:
         self.backend.flush()

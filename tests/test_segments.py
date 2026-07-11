@@ -22,9 +22,9 @@ def test_getitem_out_of_range_raises(dataset):
 
 
 def test_matches_sequential_stream_scan(dataset):
-    """SegmentDataset and SegmentStream share SegmentIndex/read_segment, so a
-    sequential (unshuffled) SegmentStream scan and direct segment[i] access must
-    agree segment-for-segment."""
+    """SegmentStream draws its segments from SegmentDataset, so a sequential
+    (unshuffled) SegmentStream scan and direct segment[i] access must agree
+    segment-for-segment."""
     stream = dataset.segment_stream(fields=["reward"], sequence_length=4, batch_size=3, shuffle=False)
     scanned = [s for batch in stream for s in batch.reward]
     segments = dataset.segments(fields=["reward"], sequence_length=4)
