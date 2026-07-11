@@ -128,11 +128,17 @@ class Segment:                    # arrays [L, ...] (or unbatched single step)
     info: np.ndarray | Fields           # next_obs, next_observation(s), ...
     next_observation: np.ndarray | Fields
     next_info: np.ndarray | Fields
+    all_observations: np.ndarray | Fields   # the L+1 rows obs/next_obs slice:
+    all_infos: np.ndarray | Fields          # [:-1] is obs, [1:] is next_obs
     terminated: np.ndarray        # True only on a terminal final transition
     truncated: np.ndarray
     mask: np.ndarray              # True on real transitions, False on padding
     schema: DatasetSchema
     def select(self, fields: list[str]) -> Segment
+    def map(self, fn) -> Segment  # fn once per field's row buffer; all views
+                                  # re-derived from the result, so a copying
+                                  # conversion (GPU, pinning) never duplicates
+                                  # the obs/next_obs overlap
 
 class Batch(Segment):             # arrays [B, L, ...], flags [B, L]
     context: Batch                # time slices when configured with

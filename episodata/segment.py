@@ -13,6 +13,10 @@ so there is no alignment convention to know:
   produced.
 - ``terminated`` / ``truncated`` / ``mask``: per-transition flags —
   ``terminated[i]`` is the done signal of transition ``i``.
+- ``all_observations`` / ``all_infos``: the ``L + 1`` observations the
+  window spans — ``observation`` plus the final ``next_observation`` row;
+  ``all_observations[:-1]`` is ``observation`` and ``all_observations[1:]``
+  is ``next_observation``.
 
 Each role accessor returns the bare ``[L, ...]`` array when the source was
 a bare array, or a :class:`Fields` view when it was a dict (see
@@ -26,6 +30,12 @@ is rows ``[:-1]``, everything else rows ``[1:]``), so e.g. pixel
 observations are never duplicated between ``observation`` and
 ``next_observation``. A :class:`Batch` stacks segments along a leading
 batch axis and re-derives the same views from a ``[B, L+1]`` buffer.
+
+To keep that sharing across a conversion that copies (moving to a GPU,
+pinning memory, forcing contiguity), convert the buffers — not the views:
+:meth:`Segment.map` applies a function once per field's row buffer and
+re-derives every accessor from the result, so ``observation`` and
+``next_observation`` stay two slices of one allocation on the other side.
 """
 
 from __future__ import annotations
@@ -56,7 +66,10 @@ class Segment:
     ``seg.next_info`` and the per-transition flags ``terminated`` /
     ``truncated`` / ``mask`` (True on real transitions, False on the
     zero-padding of a segment drawn from a too-short episode). See the
-    module docstring for the transition contract.
+    module docstring for the transition contract. ``seg.all_observations``
+    / ``seg.all_obs`` and ``seg.all_infos`` expose the underlying ``L + 1``
+    observation rows that ``observation`` and ``next_observation`` are
+    views of.
 
     Returned by :meth:`Episode.segment` and :class:`SegmentDataset`; combine
     a list of these into a :class:`Batch` via
@@ -135,6 +148,25 @@ class Segment:
         """The info paired with each ``next_observation``."""
         return role_view(self._next, self._schema, "info")
 
+    @cached_property
+    def all_observations(self) -> np.ndarray | Fields:
+        """All ``L + 1`` observations of the window, as one array:
+        ``observation`` is ``all_observations[:-1]`` and
+        ``next_observation`` is ``all_observations[1:]``.
+
+        This is the buffer to hand to a converter that copies (e.g.
+        ``torch.as_tensor(...)`` onto a device): one transfer per field
+        instead of one per view — though :meth:`map` does that for every
+        field at once.
+        """
+        return role_view(self._rows, self._schema, "observation")
+
+    @cached_property
+    def all_infos(self) -> np.ndarray | Fields:
+        """All ``L + 1`` infos of the window; same layout as
+        ``all_observations``."""
+        return role_view(self._rows, self._schema, "info")
+
     # -- aliases -------------------------------------------------------------
 
     @property
@@ -168,6 +200,34 @@ class Segment:
     @property
     def next_infos(self):
         return self.next_info
+
+    @property
+    def all_obs(self):
+        return self.all_observations
+
+    def map(self, fn) -> "Segment":
+        """Apply ``fn`` once to each field's underlying row buffer (and to
+        the ``terminated``/``truncated``/``mask`` flags) and re-derive every
+        accessor from the results.
+
+        This is the safe way to convert a segment to another array library:
+        ``observation`` and ``next_observation`` of the result are slices of
+        the one array ``fn`` returned, so a copying conversion never
+        duplicates the overlapping rows::
+
+            batch = batch.map(lambda a: torch.as_tensor(a).to("cuda"))
+            batch.next_obs  # cuda tensor sharing storage with batch.obs
+
+        ``fn`` may return any array-like supporting basic slicing.
+        """
+        return type(self)(
+            {k: fn(v) for k, v in self._rows.items()},
+            self._schema,
+            terminated=None if self.terminated is None else fn(self.terminated),
+            truncated=None if self.truncated is None else fn(self.truncated),
+            mask=None if self.mask is None else fn(self.mask),
+            _squeeze=self._squeeze,
+        )
 
     def select(self, fields: list[str]) -> "Segment":
         return type(self)(
@@ -220,6 +280,18 @@ class Batch(Segment):
         )
         self._context_length = context_length
         self._target_length = target_length
+
+    def map(self, fn) -> "Batch":
+        return Batch(
+            {k: fn(v) for k, v in self._rows.items()},
+            self._schema,
+            context_length=self._context_length,
+            target_length=self._target_length,
+            terminated=None if self.terminated is None else fn(self.terminated),
+            truncated=None if self.truncated is None else fn(self.truncated),
+            mask=None if self.mask is None else fn(self.mask),
+            _squeeze=self._squeeze,
+        )
 
     def select(self, fields: list[str]) -> "Batch":
         return Batch(

@@ -81,6 +81,95 @@ def test_batch_role_views(dataset):
     assert batch.mask.shape == (2, 4)
 
 
+def test_all_observations_is_the_shared_buffer(dataset):
+    segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=4)
+    seg = segments[0]
+    rows = seg.all_observations
+    assert rows["state"].shape == (5, 5)
+    assert np.array_equal(rows["state"][:-1], seg.obs["state"])
+    assert np.array_equal(rows["state"][1:], seg.next_obs["state"])
+    assert np.shares_memory(rows["state"], seg.obs["state"])
+    assert np.shares_memory(rows["state"], seg.next_obs["state"])
+    assert seg.all_obs is seg.all_observations
+    # action fields never leak into the observation rows
+    assert set(rows) == {"front_camera", "state"}
+
+
+def test_batch_all_observations_shape(dataset):
+    segments = dataset.segments(fields=["state", "action"], sequence_length=4)
+    batch = segments.collate([segments[0], segments[1]])
+    assert batch.all_observations["state"].shape == (2, 5, 5)
+    assert np.array_equal(batch.all_observations["state"][:, :-1], batch.obs["state"])
+
+
+class FakeTensor:
+    """Minimal non-numpy array: basic slicing and shape only."""
+
+    def __init__(self, arr):
+        self.arr = arr
+
+    def __getitem__(self, index):
+        return FakeTensor(self.arr[index])
+
+    @property
+    def shape(self):
+        return self.arr.shape
+
+
+def test_map_rederives_views_from_converted_buffers(dataset):
+    segments = dataset.segments(fields=["state", "action"], sequence_length=4)
+    seg = segments[0]
+    converted = []
+
+    def fn(a):
+        copy = np.array(a)
+        converted.append(copy)
+        return copy
+
+    mapped = seg.map(fn)
+    # fn ran once per field buffer plus the three flags — not once per view
+    assert len(converted) == 2 + 3
+    assert np.array_equal(mapped.obs["state"], seg.obs["state"])
+    assert np.array_equal(mapped.next_obs["state"], seg.next_obs["state"])
+    assert np.array_equal(mapped.action, seg.action)
+    assert np.array_equal(mapped.mask, seg.mask)
+    # obs and next_obs of the result still share one converted buffer
+    assert np.shares_memory(mapped.obs["state"], mapped.next_obs["state"])
+    assert not np.shares_memory(mapped.obs["state"], seg.obs["state"])
+
+
+def test_map_supports_non_numpy_arrays(dataset):
+    segments = dataset.segments(fields=["state", "action"], sequence_length=4)
+    seg = segments[0]
+    mapped = seg.map(FakeTensor)
+    assert np.array_equal(mapped.obs["state"].arr, seg.obs["state"])
+    assert np.array_equal(mapped.next_obs["state"].arr, seg.next_obs["state"])
+    assert np.array_equal(mapped.action.arr, seg.action)
+
+
+def test_map_batch_preserves_context_target(dataset):
+    segments = dataset.segments(fields=["state", "action"], context_length=2, target_length=3)
+    batch = segments.collate([segments[0], segments[1]])
+    mapped = batch.map(np.array)
+    assert type(mapped) is type(batch)
+    assert mapped.context.obs["state"].shape == (2, 2, 5)
+    assert mapped.target.obs["state"].shape == (2, 3, 5)
+    assert np.array_equal(mapped.terminated, batch.terminated)
+
+
+def test_map_to_torch_shares_storage(dataset):
+    torch = pytest.importorskip("torch")
+
+    segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=4)
+    batch = segments.collate([segments[0], segments[1]])
+    mapped = batch.map(lambda a: torch.as_tensor(np.ascontiguousarray(a)))
+    obs = mapped.obs["front_camera"]
+    next_obs = mapped.next_obs["front_camera"]
+    assert isinstance(obs, torch.Tensor)
+    assert obs.untyped_storage().data_ptr() == next_obs.untyped_storage().data_ptr()
+    assert np.array_equal(obs.numpy(), batch.obs["front_camera"])
+
+
 def test_filter(dataset):
     segments = dataset.segments(
         fields=["reward"], sequence_length=2, filter=lambda ep: len(ep) > 8
