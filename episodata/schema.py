@@ -16,6 +16,9 @@ import numpy as np
 
 SCHEMA_VERSION = 2
 
+#: Separator for flattening nested field structures into stable path keys.
+SEP = "/"
+
 #: Field roles. Observations, actions and rewards are temporal fields that
 #: exist at every step of an episode. "info" covers auxiliary per-step data.
 ROLES = ("observation", "action", "reward", "info")
@@ -95,6 +98,28 @@ class DatasetSchema:
             return list(self.fields)
         return [k for k, f in self.fields.items() if f.role == role]
 
+    def resolve_fields(self, fields: list[str] | None) -> list[str]:
+        """Resolve requested names to schema field keys.
+
+        A name that is a path prefix (e.g. ``"keyboard"``) selects every
+        field beneath it.
+        """
+        if fields is None:
+            return self.field_keys()
+        resolved: list[str] = []
+        for name in fields:
+            if name in self.fields:
+                resolved.append(name)
+                continue
+            head = f"{name}{SEP}"
+            members = [k for k in self.fields if k.startswith(head)]
+            if not members:
+                raise KeyError(
+                    f"unknown field {name!r}; schema has {list(self.fields)}"
+                )
+            resolved.extend(members)
+        return resolved
+
     # -- refinement (hybrid mode) -----------------------------------------
 
     def rename_field(self, old: str, new: str) -> None:
@@ -106,14 +131,32 @@ class DatasetSchema:
 
     # -- validation --------------------------------------------------------
 
-    def validate_step_value(self, field_key: str, per_step_array: np.ndarray) -> None:
-        field = self.fields[field_key]
-        arr = np.asarray(per_step_array)
-        if tuple(arr.shape) != field.shape:
-            raise ValueError(
-                f"field {field_key!r}: per-step shape {tuple(arr.shape)} does not "
-                f"match declared shape {field.shape}"
-            )
+    def validate_fields(self, fields: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Validate temporal field data against the schema and cast to
+        logical dtype.
+
+        Every array must carry a leading time dimension and match its
+        field's declared per-step shape; all required (non-optional) fields
+        must be present.
+        """
+        out: dict[str, np.ndarray] = {}
+        for key, arr in fields.items():
+            if key not in self.fields:
+                raise KeyError(f"field {key!r} is not in the schema")
+            spec = self.fields[key]
+            arr = np.asarray(arr)
+            expected = (len(arr), *spec.shape)
+            if tuple(arr.shape) != expected:
+                raise ValueError(
+                    f"field {key!r}: got shape {tuple(arr.shape)}, expected {expected}"
+                )
+            out[key] = arr.astype(spec.dtype, copy=False)
+        missing = [
+            k for k, f in self.fields.items() if k not in out and not f.optional
+        ]
+        if missing:
+            raise ValueError(f"missing required fields {missing}")
+        return out
 
     # -- serialization -----------------------------------------------------
 

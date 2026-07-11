@@ -80,7 +80,7 @@ class Episode:
             stop += length
         if not (0 <= start <= stop <= length):
             raise IndexError(f"segment [{start}, {stop}) out of range for length {length}")
-        fields = self._dataset._resolve_fields(fields)
+        fields = self._dataset.schema.resolve_fields(fields)
         # L transitions live on rows [start, stop]. An episode with no rows
         # at all (bare new_episode(), reset row not yet written) has nothing
         # to read; every segment of it is empty.

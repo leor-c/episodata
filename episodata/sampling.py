@@ -217,7 +217,7 @@ class SegmentDataset:
         pad: str | None = "suffix",
     ):
         self.dataset = dataset
-        self.fields = dataset._resolve_fields(fields)
+        self.fields = dataset.schema.resolve_fields(fields)
         self.context_length = context_length
         self.target_length = target_length
         self.segment_length = _resolve_segment_length(sequence_length, context_length, target_length)

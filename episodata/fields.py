@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .normalize import SEP
+from .schema import SEP
 
 if TYPE_CHECKING:
     from .schema import DatasetSchema

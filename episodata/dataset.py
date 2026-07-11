@@ -18,7 +18,6 @@ from .backends.base import Selection, StorageBackend, get_backend
 from .episode import Episode, EpisodeWriter
 from .sampling import SegmentDataset, SegmentStream
 from .normalize import (
-    SEP,
     normalize_action_out_episode,
     normalize_episode,
     normalize_full_episode,
@@ -246,14 +245,14 @@ class Dataset:
 
     def _append_fields(self, episode_id: int, fields: Mapping[str, np.ndarray]) -> None:
         self._require_ongoing(episode_id)
-        self.backend.append_steps(episode_id, self._validate_fields(fields))
+        self.backend.append_steps(episode_id, self.schema.validate_fields(fields))
 
     def _add_step_batch(
         self, episode_ids: Sequence[int], fields: Mapping[str, np.ndarray]
     ) -> None:
         """Append one already-normalized step per episode (row ``i`` goes to
         ``episode_ids[i]``)."""
-        fields = self._validate_fields(fields)
+        fields = self.schema.validate_fields(fields)
         for key, arr in fields.items():
             if len(arr) != len(episode_ids):
                 raise ValueError(
@@ -389,52 +388,6 @@ class Dataset:
             pad=None,
         )
         return stream.sample_transitions()
-
-    # -- internal helpers ------------------------------------------------------------
-
-    def _resolve_fields(self, fields: list[str] | None) -> list[str]:
-        """Resolve requested names to schema field keys.
-
-        A name that is a path prefix (e.g. ``"keyboard"``) selects every
-        field beneath it.
-        """
-        if fields is None:
-            return self.schema.field_keys()
-        resolved: list[str] = []
-        for name in fields:
-            if name in self.schema.fields:
-                resolved.append(name)
-                continue
-            head = f"{name}{SEP}"
-            members = [k for k in self.schema.fields if k.startswith(head)]
-            if not members:
-                raise KeyError(
-                    f"unknown field {name!r}; schema has {list(self.schema.fields)}"
-                )
-            resolved.extend(members)
-        return resolved
-
-    def _validate_fields(self, fields: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
-        """Validate appended data against the schema and cast to logical dtype."""
-        schema = self.schema
-        out: dict[str, np.ndarray] = {}
-        for key, arr in fields.items():
-            if key not in schema.fields:
-                raise KeyError(f"field {key!r} is not in the schema")
-            spec = schema.field(key)
-            arr = np.asarray(arr)
-            expected = (len(arr), *spec.shape)
-            if tuple(arr.shape) != expected:
-                raise ValueError(
-                    f"field {key!r}: got shape {tuple(arr.shape)}, expected {expected}"
-                )
-            out[key] = arr.astype(spec.dtype, copy=False)
-        missing = [
-            k for k, f in schema.fields.items() if k not in out and not f.optional
-        ]
-        if missing:
-            raise ValueError(f"missing required fields {missing}")
-        return out
 
     def __repr__(self) -> str:
         return (

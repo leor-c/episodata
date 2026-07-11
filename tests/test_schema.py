@@ -90,8 +90,38 @@ def test_rename_field():
         schema.rename_field("proprio", "action")
 
 
-def test_validate_step_value():
+def test_resolve_fields():
     schema = DatasetSchema.infer(make_episode(5))
-    schema.validate_step_value("state", np.zeros(5, dtype=np.float32))
-    with pytest.raises(ValueError, match="does not match declared shape"):
-        schema.validate_step_value("state", np.zeros(6, dtype=np.float32))
+    assert schema.resolve_fields(None) == list(schema.fields)
+    assert schema.resolve_fields(["state"]) == ["state"]
+    with pytest.raises(KeyError, match="unknown field"):
+        schema.resolve_fields(["nope"])
+
+
+def test_resolve_fields_expands_path_prefix():
+    schema = DatasetSchema(
+        fields=[
+            FieldSpec(key="keyboard/w", shape=(), dtype="bool"),
+            FieldSpec(key="keyboard/s", shape=(), dtype="bool"),
+            FieldSpec(key="mouse", shape=(2,), dtype="float32"),
+        ]
+    )
+    assert schema.resolve_fields(["keyboard"]) == ["keyboard/w", "keyboard/s"]
+    assert schema.resolve_fields(["mouse", "keyboard/w"]) == ["mouse", "keyboard/w"]
+
+
+def test_validate_fields():
+    schema = DatasetSchema.infer(make_episode(5))
+    fields = {
+        key: np.zeros((3, *spec.shape), dtype=spec.dtype)
+        for key, spec in schema.fields.items()
+    }
+    out = schema.validate_fields(dict(fields, reward=np.zeros(3, dtype=np.float64)))
+    assert out["reward"].dtype == schema.field("reward").dtype  # cast to logical dtype
+
+    with pytest.raises(KeyError, match="not in the schema"):
+        schema.validate_fields(dict(fields, extra=np.zeros(3)))
+    with pytest.raises(ValueError, match="expected"):
+        schema.validate_fields(dict(fields, state=np.zeros((3, 6), dtype=np.float32)))
+    with pytest.raises(ValueError, match="missing required fields"):
+        schema.validate_fields({"state": fields["state"]})

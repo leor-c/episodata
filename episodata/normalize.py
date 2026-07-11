@@ -58,8 +58,7 @@ from typing import Any
 
 import numpy as np
 
-#: Separator for flattening nested field structures into stable path keys.
-SEP = "/"
+from .schema import SEP
 
 _OBS_KEYS = ("observations", "observation", "obs")
 _ACTION_KEYS = ("actions", "action")
