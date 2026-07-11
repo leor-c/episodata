@@ -157,3 +157,19 @@ def test_action_out_final_pairing_is_all_or_nothing():
     episode["final_info"] = {"success": np.array(True)}
     normalized = normalize_action_out_episode(episode)
     assert np.array_equal(normalized.fields["success"], [False, False, True, True])
+
+
+def test_dict_rewards_spread_member_keys_like_actions():
+    # every role follows one rule: a dict source spreads its member keys,
+    # a bare source gets the role's canonical name
+    episode = action_in_episode(
+        rewards={
+            "score": np.array([1.0, 2.0], dtype=np.float32),
+            "shaping": np.array([0.1, 0.2], dtype=np.float32),
+        }
+    )
+    normalized = normalize_full_episode(episode)
+    assert "score" in normalized.fields and "shaping" in normalized.fields
+    assert normalized.roles["score"] == "reward"
+    assert normalized.roles["shaping"] == "reward"
+    assert "reward" not in normalized.fields

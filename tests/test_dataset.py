@@ -253,3 +253,13 @@ def test_declared_schema_mode(backend_name, dataset_path):
     )
     assert dataset.schema.field("state").semantic_type == "proprio"
     assert dataset.episode(0).segment(0, 2).obs.state.shape == (2, 5)
+
+
+def test_append_to_finalized_episode_says_so(dataset):
+    # the finalized check runs before step normalization, so even a
+    # malformed step gets the real reason
+    episode_id = dataset.episode(0).id  # episode 0 is finalized
+    with pytest.raises(ValueError, match="finalized"):
+        dataset.add_step(episode_id, {})
+    with pytest.raises(ValueError, match="finalized"):
+        dataset.add_steps(episode_id, {})

@@ -173,8 +173,7 @@ class Dataset:
         kept (or persisted) to continue an episode later — including after
         ``Dataset.open`` on a persistent backend.
         """
-        if not self.backend.episode_ongoing(episode_id):
-            raise ValueError(f"episode {episode_id} is finalized")
+        self._require_ongoing(episode_id)
         return EpisodeWriter(self, episode_id)
 
     def vector_writer(self, num_envs: int | None = None) -> VectorWriter:
@@ -213,6 +212,7 @@ class Dataset:
         signals returned by ``env.step``; a True signal finalizes the
         episode, exactly as it ends the Gymnasium episode.
         """
+        self._require_ongoing(episode_id)
         normalized = normalize_step(step)
         self._append_fields(episode_id, normalized.fields)
         if normalized.terminated or normalized.truncated:
@@ -225,6 +225,7 @@ class Dataset:
         only be True on the segment's final step, which then finalizes the
         episode.
         """
+        self._require_ongoing(episode_id)
         normalized = normalize_episode(steps)
         self._append_fields(episode_id, normalized.fields)
         if normalized.terminated or normalized.truncated:
@@ -239,9 +240,12 @@ class Dataset:
         self.backend.finalize_episode(episode_id, terminated, truncated)
         return Episode(self, episode_id)
 
-    def _append_fields(self, episode_id: int, fields: Mapping[str, np.ndarray]) -> None:
+    def _require_ongoing(self, episode_id: int) -> None:
         if not self.backend.episode_ongoing(episode_id):
             raise ValueError(f"episode {episode_id} is finalized")
+
+    def _append_fields(self, episode_id: int, fields: Mapping[str, np.ndarray]) -> None:
+        self._require_ongoing(episode_id)
         self.backend.append_steps(episode_id, self._validate_fields(fields))
 
     def _add_step_batch(
@@ -256,8 +260,7 @@ class Dataset:
                     f"field {key!r} has {len(arr)} rows for {len(episode_ids)} episodes"
                 )
         for episode_id in episode_ids:
-            if not self.backend.episode_ongoing(episode_id):
-                raise ValueError(f"episode {episode_id} is finalized")
+            self._require_ongoing(episode_id)
         self.backend.append_steps_batch(list(episode_ids), fields)
 
     def rename_field(self, old: str, new: str) -> None:

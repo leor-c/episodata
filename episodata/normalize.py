@@ -39,7 +39,9 @@ length (:func:`normalize_episode`).
 
 Internally everything becomes a flat mapping of field key -> array with a
 leading time dimension, plus episode-level terminated/truncated flags.
-Nested dicts (complex action/observation structures, e.g. Minecraft-style
+Every role follows one rule: a dict source spreads its member keys, a bare
+source gets the role's canonical name (``observation``/``action``/
+``reward``/``info``). Nested dicts (complex structures, e.g. Minecraft-style
 ``{"keyboard": {"w": ...}}``) are flattened into stable path keys such as
 ``"keyboard/w"``; the hierarchy is reconstructed from the schema, not from
 nesting in storage.
@@ -128,9 +130,7 @@ def _flatten(episode: Mapping[str, Any]) -> tuple[dict[str, np.ndarray], dict[st
 
     add_group(_first(episode, _OBS_KEYS), "observation", "observation")
     add_group(_first(episode, _ACTION_KEYS), "action", "action")
-    reward = _first(episode, _REWARD_KEYS)
-    if reward is not None:
-        add("reward", reward, "reward")
+    add_group(_first(episode, _REWARD_KEYS), "reward", "reward")
     add_group(_first(episode, _INFO_KEYS), "info", "info")
 
     if not fields:
