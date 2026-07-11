@@ -127,6 +127,27 @@ for batch in loader: ...   # episodata.Batch, arrays [B, L, ...]
 `episodata` itself never imports torch — `segments[i]` returns a `Segment`
 and works standalone with no torch installed.
 
+### To the device: `batch.map`
+
+`obs` and `next_obs` are views of one shared buffer; converting them to
+tensors one accessor at a time would copy their overlap twice. `map(fn)`
+converts a whole batch in one pass — `fn` runs once per field, and the
+result is a regular `Batch` whose views still share storage on the other
+side:
+
+```python
+for batch in loader:
+    batch = batch.map(lambda a: torch.as_tensor(a).to("cuda"))
+    batch.obs.front_camera       # cuda tensor ...
+    batch.next_obs.front_camera  # ... same allocation — nothing duplicated
+```
+
+`fn` is any array → array-like callable, so the same one-liner covers jax,
+cupy, dtype casts, or pinned-memory staging. See the README's
+[Converting to tensors](../README.md#converting-to-tensors-segmentmap)
+section for details, including `all_observations` — direct access to the
+`L + 1` observations a window spans.
+
 ### Custom samplers: prioritized replay
 
 `segments()` is a plain map-style dataset, so *any* `torch.utils.data.Sampler`

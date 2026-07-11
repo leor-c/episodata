@@ -175,6 +175,32 @@ for batch in loader: ...   # episodata.Batch, arrays [B, L, ...]
 `episodata` itself never imports torch — `segments[i]` returns a `Segment`
 (unbatched arrays `[L, ...]`) and works standalone with no torch installed.
 
+### Converting to tensors (`Segment.map`)
+
+Within a segment, `observation` and `next_observation` are two views of one
+row buffer. A copying conversion applied per accessor — a device transfer,
+`pin_memory`, anything forcing contiguity — would materialize each view
+separately and duplicate the overlapping rows. `map(fn)` converts in one
+pass instead: `fn` runs once per field's underlying buffer, and every
+accessor of the result is re-derived as a view of what `fn` returned, so
+the sharing survives the conversion:
+
+```python
+batch = batch.map(lambda a: torch.as_tensor(a).to("cuda"))
+
+batch.obs.front_camera       # cuda tensor ...
+batch.next_obs.front_camera  # ... two views of one allocation
+```
+
+The result is a regular `Batch` — role-first access, `context` / `target`
+and the per-transition flags all keep working. `fn` may return any
+array-like supporting basic slicing; episodata never imports the target
+framework.
+
+When the sequence itself is wanted (sequence models, video), a window's
+`L + 1` underlying observations are exposed directly:
+`seg.all_observations` (alias `all_obs`; likewise `all_infos`) — `[:-1]`
+is `observation`, `[1:]` is `next_observation`.
 
 ### Online episode append
 
