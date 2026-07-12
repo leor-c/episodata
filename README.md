@@ -114,8 +114,10 @@ bounds/layout — the same per-leaf model as a Gymnasium `Dict` space:
 
 ```python
 from episodata import DatasetSchema, FieldSpec
+from episodata.utils import schema_from_gym_spaces
 
 schema = DatasetSchema.infer(example_episode)      # automatic (shape/dtype reliable)
+schema = schema_from_gym_spaces(env.observation_space, env.action_space)  # from a Gymnasium env
 schema = DatasetSchema(fields=[
     FieldSpec("front_camera", shape=(3, 64, 64), dtype="uint8", low=0, high=255),
     FieldSpec("action", shape=(4,), dtype="float32", role="action"),
@@ -201,6 +203,36 @@ When the sequence itself is wanted (sequence models, video), a window's
 `L + 1` underlying observations are exposed directly:
 `seg.all_observations` (alias `all_obs`; likewise `all_infos`) — `[:-1]`
 is `observation`, `[1:]` is `next_observation`.
+
+### Starting a new dataset from scratch
+
+The most common starting point isn't a pile of arrays — it's an empty
+dataset and a live env. `Dataset.create` takes a schema and no episodes,
+giving a zero-row dataset that's immediately writable:
+
+```python
+import gymnasium as gym
+from episodata import Dataset
+from episodata.utils import schema_from_gym_spaces
+
+env = gym.make("CartPole-v1")
+schema = schema_from_gym_spaces(env.observation_space, env.action_space)
+dataset = Dataset.create(schema, path="cartpole_data")  # drop path to keep it in memory
+
+for _ in range(10):
+    obs, info = env.reset()
+    writer = dataset.new_episode(obs, infos=info)
+    terminated = truncated = False
+    while not (terminated or truncated):
+        action = env.action_space.sample()
+        obs, reward, terminated, truncated, info = env.step(action)
+        writer.add_step({
+            "observations": obs, "actions": action, "rewards": reward,
+            "terminated": terminated, "truncated": truncated,
+        })
+
+dataset.num_episodes  # 10, sampleable immediately — see Sampling above
+```
 
 ### Online episode append
 

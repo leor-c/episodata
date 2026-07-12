@@ -13,6 +13,7 @@ For the full API, see the [README](../README.md).
 ```bash
 pip install episodata          # memory + npz_directory backends
 pip install "episodata[zarr]"  # + the chunked zarr backend (Python >= 3.11)
+pip install "episodata[gym]"   # + schema_from_gym_spaces (episodata.utils)
 ```
 
 ## Design in three layers
@@ -211,6 +212,44 @@ dataset = Dataset.open("my_dataset")                          # reopen anywhere
 # Outgrew one-file-per-episode? Stream across the storage boundary:
 big = Dataset.open("my_dataset").copy_to("my_dataset_zarr", backend="zarr")
 ```
+
+## Starting a new dataset from scratch
+
+The Quick start above assumes you already have episodes in hand. The more
+common starting point is the opposite: no data yet, just an environment.
+`Dataset.create` takes a schema and no episodes at all, giving back an
+empty dataset that's immediately writable — declare the schema from the
+env's spaces, create the dataset, then collect with the same reset/step
+loop as any Gymnasium rollout:
+
+```python
+import gymnasium as gym
+from episodata import Dataset
+from episodata.utils import schema_from_gym_spaces
+
+env = gym.make("CartPole-v1")
+schema = schema_from_gym_spaces(env.observation_space, env.action_space)
+dataset = Dataset.create(schema, path="cartpole_data")  # zero episodes, ready to collect
+assert dataset.num_episodes == 0
+
+for _ in range(10):
+    obs, info = env.reset()
+    writer = dataset.new_episode(obs, infos=info)
+    terminated = truncated = False
+    while not (terminated or truncated):
+        action = env.action_space.sample()
+        obs, reward, terminated, truncated, info = env.step(action)
+        writer.add_step({
+            "observations": obs, "actions": action, "rewards": reward,
+            "terminated": terminated, "truncated": truncated,
+        })
+
+dataset.num_episodes  # 10 — sampleable immediately, same API as any dataset
+```
+
+`path="cartpole_data"` persists to `npz_directory`; drop it to collect in
+memory instead. Either way, `new_episode` / `add_step` below is the same
+API — this is just the version that starts from nothing.
 
 ## Collecting data online, two ways
 

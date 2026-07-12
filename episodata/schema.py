@@ -201,6 +201,18 @@ class DatasetSchema:
         return f"DatasetSchema(fields={list(self.fields)})"
 
 
+def _image_layout(shape: tuple[int, ...], dtype: np.dtype) -> str | None:
+    """Detect HWC/CHW layout for a uint8, 3-dim shape with an unambiguous
+    channel dim; anything else has no detectable layout."""
+    if dtype == np.uint8 and len(shape) == 3:
+        first, last = shape[0], shape[-1]
+        if last in (1, 3, 4) and first not in (1, 3, 4):
+            return "HWC"
+        if first in (1, 3, 4) and last not in (1, 3, 4):
+            return "CHW"
+    return None
+
+
 def _infer_field(key: str, role: str, per_step: np.ndarray) -> FieldSpec:
     """Build a FieldSpec for one field from a per-step example.
 
@@ -210,15 +222,9 @@ def _infer_field(key: str, role: str, per_step: np.ndarray) -> FieldSpec:
     """
     shape = tuple(per_step.shape)
     dtype = per_step.dtype
-    low = high = layout = None
+    low = high = None
     if dtype == np.uint8 and per_step.ndim >= 2:
         low, high = 0, 255
-        if per_step.ndim == 3:
-            first, last = shape[0], shape[-1]
-            if last in (1, 3, 4) and first not in (1, 3, 4):
-                layout = "HWC"
-            elif first in (1, 3, 4) and last not in (1, 3, 4):
-                layout = "CHW"
     return FieldSpec(
         key=key,
         shape=shape,
@@ -226,6 +232,6 @@ def _infer_field(key: str, role: str, per_step: np.ndarray) -> FieldSpec:
         role=role,
         low=low,
         high=high,
-        layout=layout,
+        layout=_image_layout(shape, dtype),
         optional=(role == "info"),
     )

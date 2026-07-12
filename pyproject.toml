@@ -8,6 +8,7 @@ dependencies = ["numpy>=1.24"]
 [project.optional-dependencies]
 # The zarr backend needs Python >= 3.11 (zarr-python 3's floor).
 zarr = ["zarr>=3"]
+gym = ["gymnasium>=0.29"]
 dev = ["pytest>=8"]
 
 [build-system]
