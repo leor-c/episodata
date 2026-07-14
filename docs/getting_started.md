@@ -62,11 +62,13 @@ downstream is shared.
 
 ## Quick start
 
+To create a dataset, a *schema* is required. When starting from scratch (an
+empty dataset), the schema can be declared by hand or built automatically
+from the environment's structure (currently supported for Gymnasium envs).
+
 ### Starting a new dataset from scratch
 
-The more common starting point is no data yet, just an environment.
-`Dataset.create` takes a schema and no episodes at all, giving back an
-empty dataset that's immediately writable — build the schema from the
+`Dataset.create` takes a schema, giving back an empty dataset. Build the schema from the
 env's spaces, create the dataset, then collect with the same reset/step
 loop as any Gymnasium rollout:
 
@@ -99,7 +101,35 @@ dataset.num_episodes  # 10 — sampleable immediately, same API as any dataset
 memory instead. Either way, `new_episode` / `add_step` below is the same
 API — this is just the version that starts from nothing.
 
-### ...or from episodes already in hand
+### Manually declaring a schema
+
+`schema_from_gym_spaces` is convenient, but only covers Gymnasium envs. For
+anything else — a different env API, or no env at all yet — declare the
+schema by hand. `DatasetSchema` is always just a list of `FieldSpec`, one
+per field, each declaring its own per-step shape/dtype (the per-leaf model
+of a Gymnasium `Dict` space):
+
+```python
+from episodata import Dataset, DatasetSchema, FieldSpec
+
+schema = DatasetSchema(fields=[
+    FieldSpec("front_camera", shape=(3, 64, 64), dtype="uint8", low=0, high=255, layout="CHW"),
+    FieldSpec("state", shape=(7,), dtype="float32"),                  # role defaults to "observation"
+    FieldSpec("action", shape=(4,), dtype="float32", role="action", low=-1.0, high=1.0),
+    FieldSpec("reward", shape=(), dtype="float32", role="reward"),
+])
+dataset = Dataset.create(schema, path="my_dataset")  # zero episodes, ready to collect
+```
+
+`key` is the stable logical id used across the storage boundary and `shape`
+excludes the leading time dimension; `low`/`high` are optional bounds and
+`layout` only applies to image-shaped fields. `terminated`/`truncated`
+aren't schema fields — they're episode-level signals the write API handles
+separately (see [Collecting data online](#collecting-data-online-two-ways)).
+
+### Starting from existing episodes
+
+When existing episodes are available, the schema can be inferred automatically:
 
 ```python
 import numpy as np

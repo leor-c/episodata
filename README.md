@@ -139,7 +139,7 @@ Within a role view a name is an exact field or a group prefix — nothing
 else. Method names (`schema`, `keys`/`items`/`values`/`get`) win attribute
 lookup over a same-named field; brackets always reach the field.
 
-### Schema: automatic or declared
+### Schema: automatic, from Gymnasium, or declared by hand
 
 Every field carries its own per-step format — shape, dtype and optional
 bounds/layout — the same per-leaf model as a Gymnasium `Dict` space:
@@ -150,11 +150,29 @@ from episodata.utils import schema_from_gym_spaces
 
 schema = DatasetSchema.infer(example_episode)      # automatic (shape/dtype reliable)
 schema = schema_from_gym_spaces(env.observation_space, env.action_space)  # from a Gymnasium env
-schema = DatasetSchema(fields=[
-    FieldSpec("front_camera", shape=(3, 64, 64), dtype="uint8", low=0, high=255),
-    FieldSpec("action", shape=(4,), dtype="float32", role="action"),
-])                                                 # declared
 ```
+
+Both build the same thing `DatasetSchema` always is: a list of `FieldSpec`.
+Construct that list by hand when there's no env or example episode to read
+it from — e.g. defining a dataset's layout up front, independent of any
+particular Gymnasium install:
+
+```python
+schema = DatasetSchema(fields=[
+    FieldSpec("front_camera", shape=(3, 64, 64), dtype="uint8", low=0, high=255, layout="CHW"),
+    FieldSpec("state", shape=(7,), dtype="float32"),                      # role defaults to "observation"
+    FieldSpec("action", shape=(4,), dtype="float32", role="action", low=-1.0, high=1.0),
+    FieldSpec("reward", shape=(), dtype="float32", role="reward"),
+])
+dataset = Dataset.create(schema, path="my_dataset")
+```
+
+`key` is the stable logical id used across the storage boundary; `shape` is
+per-step (no leading time dimension); `low`/`high` are optional bounds and
+`layout` (`"HWC"`/`"CHW"`) is only meaningful for image-shaped fields.
+`terminated`/`truncated` aren't fields — they're episode-level signals
+handled separately by the write API (see
+[Online episode append](#online-episode-append)).
 
 The persisted schema is authoritative — it is never re-inferred on reopen.
 
