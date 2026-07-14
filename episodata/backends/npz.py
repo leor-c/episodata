@@ -25,6 +25,7 @@ import dataclasses
 import json
 import os
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -56,7 +57,7 @@ class _EpisodeRecord:
 class NpzDirectoryBackend(StorageBackend):
     name = "npz_directory"
 
-    def __init__(self, root: str, schema: DatasetSchema, records: list[_EpisodeRecord]):
+    def __init__(self, root: str | Path, schema: DatasetSchema, records: list[_EpisodeRecord]):
         self._root = root
         self._schema = schema
         self._records = records
@@ -65,7 +66,9 @@ class NpzDirectoryBackend(StorageBackend):
     # -- lifecycle ---------------------------------------------------------
 
     @classmethod
-    def create(cls, schema: DatasetSchema, path: str | None = None, **options: Any) -> "NpzDirectoryBackend":
+    def create(
+        cls, schema: DatasetSchema, path: str | Path | None = None, **options: Any
+    ) -> "NpzDirectoryBackend":
         if path is None:
             raise ValueError("NpzDirectoryBackend requires a path")
         os.makedirs(os.path.join(path, "episodes"), exist_ok=True)
@@ -76,7 +79,7 @@ class NpzDirectoryBackend(StorageBackend):
         return backend
 
     @classmethod
-    def open(cls, path: str) -> "NpzDirectoryBackend":
+    def open(cls, path: str | Path) -> "NpzDirectoryBackend":
         with open(os.path.join(path, "manifest.json")) as f:
             manifest = json.load(f)
         if manifest["backend"] != cls.name:

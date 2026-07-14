@@ -40,6 +40,18 @@ def test_persistence_roundtrip(tmp_path):
     )
 
 
+def test_persistence_roundtrip_accepts_path_object(tmp_path):
+    # `path` must also accept a pathlib.Path, not just str.
+    path = tmp_path / "ds"
+    original = Dataset.from_episodes([make_episode(6)], path=path)
+    reopened = Dataset.open(path)
+    assert reopened.schema.to_dict() == original.schema.to_dict()
+    assert reopened.num_episodes == 1
+    assert np.array_equal(
+        reopened.episode(0).read().obs["state"], original.episode(0).read().obs["state"]
+    )
+
+
 def test_schema_not_reinferred_on_open(tmp_path):
     # Declared bounds inference would never produce: seeing them after
     # reopen proves the persisted schema is read, not re-inferred.

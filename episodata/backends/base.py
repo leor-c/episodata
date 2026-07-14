@@ -16,6 +16,7 @@ from __future__ import annotations
 import abc
 import dataclasses
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, ClassVar
 
 import numpy as np
@@ -67,12 +68,14 @@ class StorageBackend(abc.ABC):
 
     @classmethod
     @abc.abstractmethod
-    def create(cls, schema: DatasetSchema, path: str | None = None, **options: Any) -> "StorageBackend":
+    def create(
+        cls, schema: DatasetSchema, path: str | Path | None = None, **options: Any
+    ) -> "StorageBackend":
         """Create empty storage for a new dataset."""
 
     @classmethod
     @abc.abstractmethod
-    def open(cls, path: str) -> "StorageBackend":
+    def open(cls, path: str | Path) -> "StorageBackend":
         """Open existing storage; the persisted schema is authoritative."""
 
     @property

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -38,13 +39,15 @@ class MemoryBackend(StorageBackend):
         self._buffers = EpisodeBuffers()
 
     @classmethod
-    def create(cls, schema: DatasetSchema, path: str | None = None, **options: Any) -> "MemoryBackend":
+    def create(
+        cls, schema: DatasetSchema, path: str | Path | None = None, **options: Any
+    ) -> "MemoryBackend":
         if path is not None:
             raise ValueError("MemoryBackend is not persistent; do not pass a path")
         return cls(schema)
 
     @classmethod
-    def open(cls, path: str) -> "MemoryBackend":
+    def open(cls, path: str | Path) -> "MemoryBackend":
         raise NotImplementedError("MemoryBackend cannot be reopened from a path")
 
     @property

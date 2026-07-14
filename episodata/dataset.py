@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -38,7 +39,7 @@ class Dataset:
     def create(
         cls,
         schema: DatasetSchema,
-        path: str | None = None,
+        path: str | Path | None = None,
         backend: str | None = None,
         **backend_options: Any,
     ) -> "Dataset":
@@ -57,7 +58,7 @@ class Dataset:
         cls,
         episodes: Iterable[Mapping[str, Any]],
         schema: DatasetSchema | None = None,
-        path: str | None = None,
+        path: str | Path | None = None,
         backend: str | None = None,
         alignment: str | None = None,
         **backend_options: Any,
@@ -83,7 +84,7 @@ class Dataset:
         return dataset
 
     @classmethod
-    def open(cls, path: str, backend: str | None = None) -> "Dataset":
+    def open(cls, path: str | Path, backend: str | None = None) -> "Dataset":
         """Open an existing dataset; the persisted schema is authoritative.
 
         The persisted manifest names the backend, so ``backend`` is only
@@ -273,7 +274,7 @@ class Dataset:
 
     def copy_to(
         self,
-        path: str | None = None,
+        path: str | Path | None = None,
         backend: str | None = None,
         **backend_options: Any,
     ) -> "Dataset":

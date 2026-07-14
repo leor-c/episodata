@@ -35,6 +35,7 @@ import json
 import math
 import os
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -54,7 +55,7 @@ _MAX_CHUNK_STEPS = 65536
 class ZarrBackend(StorageBackend):
     name = "zarr"
 
-    def __init__(self, root: str, schema: DatasetSchema, group: zarr.Group):
+    def __init__(self, root: str | Path, schema: DatasetSchema, group: zarr.Group):
         self._root = root
         self._schema = schema
         self._group = group
@@ -75,7 +76,7 @@ class ZarrBackend(StorageBackend):
     def create(
         cls,
         schema: DatasetSchema,
-        path: str | None = None,
+        path: str | Path | None = None,
         *,
         chunk_bytes: int = _DEFAULT_CHUNK_BYTES,
         shard_bytes: int | None = None,
@@ -135,7 +136,7 @@ class ZarrBackend(StorageBackend):
         return backend
 
     @classmethod
-    def open(cls, path: str) -> "ZarrBackend":
+    def open(cls, path: str | Path) -> "ZarrBackend":
         with open(os.path.join(path, "manifest.json")) as f:
             manifest = json.load(f)
         if manifest["backend"] != cls.name:
