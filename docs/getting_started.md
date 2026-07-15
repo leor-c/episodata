@@ -11,8 +11,7 @@ For the full API, see the [README](../README.md).
 ## Install
 
 ```bash
-pip install episodata          # memory + npz_directory backends
-pip install "episodata[zarr]"  # + the chunked zarr backend (Python >= 3.11)
+pip install episodata          # memory + npz_directory + zarr backends (Python >= 3.11)
 pip install "episodata[gym]"   # + schema_from_gym_spaces (episodata.utils)
 ```
 
@@ -39,9 +38,9 @@ logical data model  →  query & sampling API  →  storage backend
    `npz_directory`, and `zarr` ship built in; `Dataset.open` reads the
    backend out of the dataset's manifest, so calling code never names one.
 
-The payoff: prototype in memory, `Dataset.from_episodes(..., path=...)` to
-persist, and `dataset.copy_to(path, backend="zarr")` to scale up — without
-touching a single line downstream.
+The payoff: prototype in memory, then `Dataset.from_episodes(..., path=...)`
+to persist — chunked, scalable `zarr` storage by default — without touching
+a single line downstream.
 
 ## One idea worth knowing: everything counts env steps
 
@@ -97,9 +96,10 @@ for _ in range(10):
 dataset.num_episodes  # 10 — sampleable immediately, same API as any dataset
 ```
 
-`path="cartpole_data"` persists to `npz_directory`; drop it to collect in
-memory instead. Either way, `new_episode` / `add_step` below is the same
-API — this is just the version that starts from nothing.
+`path="cartpole_data"` persists to `zarr` (the default backend whenever a
+path is given); drop it to collect in memory instead. Either way,
+`new_episode` / `add_step` below is the same API — this is just the
+version that starts from nothing.
 
 ### Manually declaring a schema
 
@@ -275,11 +275,12 @@ transitions.obs, transitions.action, transitions.next_obs
 ## Persisting and scaling up
 
 ```python
-dataset = Dataset.from_episodes(episodes, path="my_dataset")  # npz_directory
+dataset = Dataset.from_episodes(episodes, path="my_dataset")  # zarr, chunked reads
 dataset = Dataset.open("my_dataset")                          # reopen anywhere
 
-# Outgrew one-file-per-episode? Stream across the storage boundary:
-big = Dataset.open("my_dataset").copy_to("my_dataset_zarr", backend="zarr")
+# Want plain, individually-inspectable .npz-per-episode files instead?
+dataset = Dataset.from_episodes(episodes, path="my_dataset", backend="npz_directory")
+small = Dataset.open("my_dataset").copy_to("my_dataset_zarr", backend="zarr")
 ```
 
 ## Collecting data online, two ways

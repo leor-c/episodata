@@ -48,7 +48,9 @@ def test_reopen_round_trip(tmp_path):
 
 
 def test_open_dispatches_npz_from_manifest(tmp_path):
-    Dataset.from_episodes([make_episode(5)], path=str(tmp_path / "ds"))
+    Dataset.from_episodes(
+        [make_episode(5)], path=str(tmp_path / "ds"), backend="npz_directory"
+    )
     assert Dataset.open(str(tmp_path / "ds")).backend.name == "npz_directory"
 
 

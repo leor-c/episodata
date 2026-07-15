@@ -45,11 +45,13 @@ class Dataset:
     ) -> "Dataset":
         """Create an empty dataset with a declared schema.
 
-        ``backend`` defaults to "memory" without a path and "npz_directory"
-        with one.
+        ``backend`` defaults to "memory" without a path and "zarr" with
+        one — zarr's chunked reads scale to long episodes and large-image
+        observations; pass ``backend="npz_directory"`` explicitly for
+        plain, individually-inspectable per-episode ``.npz`` files instead.
         """
         if backend is None:
-            backend = "memory" if path is None else "npz_directory"
+            backend = "memory" if path is None else "zarr"
         backend_cls = get_backend(backend)
         return cls(backend_cls.create(schema, path=path, **backend_options))
 

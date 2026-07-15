@@ -2,12 +2,10 @@
 name = "episodata"
 version = "0.1.0"
 description = "Unified episode dataset library for world models and control"
-requires-python = ">=3.10"
-dependencies = ["numpy>=1.24"]
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.24", "zarr>=3"]
 
 [project.optional-dependencies]
-# The zarr backend needs Python >= 3.11 (zarr-python 3's floor).
-zarr = ["zarr>=3"]
 gym = ["gymnasium>=0.29"]
 dev = ["pytest>=8"]
 
