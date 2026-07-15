@@ -178,6 +178,40 @@ def test_alignment_rejects_invalid_value():
         batch_to_tensordict(_make_batch(), alignment="sideways")
 
 
+def test_torch_dataloader_multiprocess_batch_to_tensordict(backend_name, dataset_path):
+    """A Batch that came out of a multi-worker DataLoader (collated inside
+    the worker process, then pickled across to the main process) must still
+    convert correctly: worker-process pickling doesn't preserve numpy view
+    relationships, so this exercises that batch_to_tensordict's zero-copy
+    guarantee survives the round trip rather than relying on stale
+    (pre-pickling) cached views."""
+    if backend_name != "npz_directory":
+        pytest.skip("multiprocess benefit is specific to disk-backed backends")
+    from torch.utils.data import DataLoader
+
+    from tests.conftest import make_episode
+
+    from episodata import Dataset
+
+    episodes = [make_episode(10, seed=0), make_episode(7, seed=1, terminated=False)]
+    ds = Dataset.from_episodes(episodes, path=dataset_path, backend=backend_name)
+    segments = ds.segments(fields=["front_camera", "state", "action"], sequence_length=4)
+    loader = DataLoader(
+        segments, batch_size=4, shuffle=True, num_workers=2, collate_fn=segments.collate
+    )
+    batch = next(iter(loader))
+
+    td = batch_to_tensordict(batch)
+    assert td["observation"]["front_camera"].shape == (4, 4, 3, 8, 8)
+    obs = td["observation"]["front_camera"]
+    next_obs = td["next_observation"]["front_camera"]
+    assert obs.untyped_storage().data_ptr() == next_obs.untyped_storage().data_ptr()
+
+    td_aligned = batch_to_tensordict(batch, alignment="action_out")
+    assert td_aligned.batch_size == torch.Size([4, 5])
+    assert torch.all(td_aligned["action"][:, -1] == 0)
+
+
 def test_missing_torch_raises_clear_import_error(monkeypatch):
     import builtins
 
