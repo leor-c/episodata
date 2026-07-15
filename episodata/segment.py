@@ -36,12 +36,6 @@ pinning memory, forcing contiguity), convert the buffers — not the views:
 :meth:`Segment.map` applies a function once per field's row buffer and
 re-derives every accessor from the result, so ``observation`` and
 ``next_observation`` stay two slices of one allocation on the other side.
-``map`` applies uniformly to every field, though — for a role-specific
-conversion (e.g. an image encoder that must skip action/reward buffers),
-convert just that field's buffer (``seg.all_observations["cam"]``, or the
-plain array for a bare field) and fold the result back in with
-:meth:`Segment.assign`, which substitutes named fields' row buffers and
-leaves the rest — flags included — untouched.
 """
 
 from __future__ import annotations
@@ -245,33 +239,6 @@ class Segment:
             _squeeze=self._squeeze,
         )
 
-    def assign(self, fields: Mapping[str, np.ndarray]) -> "Segment":
-        """Return a copy with ``fields``' raw row buffers substituted in;
-        every other field, and ``terminated``/``truncated``/``mask``, pass
-        through unchanged. A replacement must supply the same ``L + 1`` raw
-        rows the field started with (what ``all_observations``/``map``'s
-        ``fn`` see), since ``observation``/``next_observation`` re-derive as
-        slices of it — the way to fold an encoder's output back in without
-        losing the rest of the segment::
-
-            latents = encoder(t.all_observations["cam1"])  # [B, L+1, D]
-            t.assign({"cam1": latents}).next_observation   # [B, L, D]
-
-        Unlike :meth:`select`, which narrows to a subset of the fields
-        already present, ``assign`` can also reintroduce a schema field
-        this segment doesn't currently hold (e.g. one dropped by an
-        earlier ``select``) — but not a wholly new key absent from the
-        schema, since every raw row is still resolved through it.
-        """
-        return type(self)(
-            {**self._rows, **fields},
-            self._schema,
-            terminated=self.terminated,
-            truncated=self.truncated,
-            mask=self.mask,
-            _squeeze=self._squeeze,
-        )
-
     def __repr__(self) -> str:
         shapes = {k: tuple(v.shape) for k, v in self._data.items()}
         return f"{type(self).__name__}({shapes})"
@@ -329,18 +296,6 @@ class Batch(Segment):
     def select(self, fields: list[str]) -> "Batch":
         return Batch(
             {k: self._rows[k] for k in fields},
-            self._schema,
-            context_length=self._context_length,
-            target_length=self._target_length,
-            terminated=self.terminated,
-            truncated=self.truncated,
-            mask=self.mask,
-            _squeeze=self._squeeze,
-        )
-
-    def assign(self, fields: Mapping[str, np.ndarray]) -> "Batch":
-        return Batch(
-            {**self._rows, **fields},
             self._schema,
             context_length=self._context_length,
             target_length=self._target_length,

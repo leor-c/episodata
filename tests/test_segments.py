@@ -170,43 +170,6 @@ def test_map_to_torch_shares_storage(dataset):
     assert np.array_equal(obs.numpy(), batch.obs["front_camera"])
 
 
-def test_assign_substitutes_field_and_rederives_views(dataset):
-    segments = dataset.segments(fields=["state", "action"], sequence_length=4)
-    seg = segments[0]
-    latents = seg.all_observations["state"].sum(axis=-1, keepdims=True)  # fake encoder, [5, 1]
-    assigned = seg.assign({"state": latents})
-    assert assigned.obs["state"].shape == (4, 1)
-    assert np.array_equal(assigned.obs["state"], latents[:-1])
-    assert np.array_equal(assigned.next_obs["state"], latents[1:])
-    assert np.shares_memory(assigned.obs["state"], assigned.next_obs["state"])
-    # every other field, and the flags, pass through untouched
-    assert np.array_equal(assigned.action, seg.action)
-    assert np.array_equal(assigned.mask, seg.mask)
-    assert np.array_equal(assigned.terminated, seg.terminated)
-    # the original segment is unaffected
-    assert seg.obs["state"].shape == (4, 5)
-
-
-def test_assign_batch_preserves_context_target(dataset):
-    segments = dataset.segments(fields=["state", "action"], context_length=2, target_length=3)
-    batch = segments.collate([segments[0], segments[1]])
-    latents = batch.all_observations["state"].sum(axis=-1, keepdims=True)
-    assigned = batch.assign({"state": latents})
-    assert type(assigned) is type(batch)
-    assert assigned.context.obs["state"].shape == (2, 2, 1)
-    assert assigned.target.obs["state"].shape == (2, 3, 1)
-    assert np.array_equal(assigned.terminated, batch.terminated)
-
-
-def test_assign_can_reintroduce_a_selected_away_field(dataset):
-    segments = dataset.segments(fields=["state", "action"], sequence_length=4)
-    seg = segments[0]
-    narrowed = seg.select(["action"])
-    restored = narrowed.assign({"state": seg.all_observations["state"]})
-    assert np.array_equal(restored.obs["state"], seg.obs["state"])
-    assert np.array_equal(restored.action, seg.action)
-
-
 def test_filter(dataset):
     segments = dataset.segments(
         fields=["reward"], sequence_length=2, filter=lambda ep: len(ep) > 8
