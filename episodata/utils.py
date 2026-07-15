@@ -9,7 +9,7 @@ functions is actually called.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
@@ -165,8 +165,29 @@ def _role_entry(value: Any) -> Any:
     return value
 
 
+def _pad_time(tensor: Any, time_axis: int, pad: str) -> Any:
+    """Grow ``tensor`` by one zero row along ``time_axis``, at the front
+    (``pad="before"``) or back (``pad="after"``)."""
+    import torch
+
+    pad_shape = list(tensor.shape)
+    pad_shape[time_axis] = 1
+    zero_row = tensor.new_zeros(pad_shape)
+    pieces = (zero_row, tensor) if pad == "before" else (tensor, zero_row)
+    return torch.cat(pieces, dim=time_axis)
+
+
+def _pad_entry(entry: Any, time_axis: int, pad: str) -> Any:
+    if isinstance(entry, dict):
+        return {k: _pad_entry(v, time_axis, pad) for k, v in entry.items()}
+    return _pad_time(entry, time_axis, pad)
+
+
 def batch_to_tensordict(
-    batch: "Segment", device: Any = None, include_all_observations: bool = False
+    batch: "Segment",
+    device: Any = None,
+    include_all_observations: bool = False,
+    pad: Literal["before", "after"] | None = None,
 ) -> Any:
     """Convert a :class:`~episodata.segment.Segment` or
     :class:`~episodata.segment.Batch` to a :class:`tensordict.TensorDict`,
@@ -196,9 +217,41 @@ def batch_to_tensordict(
     :class:`~episodata.segment.Segment`) — so e.g. ``td["mask"]`` stays a
     ``[B, L]`` tensor even though ``batch_size`` is only ``(B,)``.
 
+    ``pad``, if set, makes every entry ``L + 1`` rows long so ``batch_size``
+    covers the full time dim (``[B, L + 1]``, or ``[L + 1]`` unbatched) with
+    no shrinking. ``observation``/``next_observation``/``info``/``next_info``
+    are dropped in favor of ``all_observations``/``all_infos`` (real data,
+    already ``L + 1`` long — this is what ``include_all_observations`` adds,
+    so the two options conflict and can't be combined). ``action``,
+    ``reward``, and ``terminated``/``truncated``/``mask`` have no such
+    ``L + 1`` counterpart, so they're grown by one zero row instead — that
+    row is a placeholder, not real data:
+
+    - ``pad="before"`` prepends the zero row, so entry ``t`` reads as
+      *"the action/reward/flag that led into ``all_observations[t]``"*
+      (undefined, i.e. zero, at ``t=0`` — the window's first observation).
+    - ``pad="after"`` appends the zero row, so entry ``t`` reads as
+      *"the action/reward/flag taken at ``all_observations[t]``"* (undefined
+      at ``t=L`` — the window's last observation has no known outgoing
+      action).
+
+    Pick whichever side matches how the rest of your pipeline aligns
+    actions to observations. Because this introduces placeholder data, it's
+    opt-in only: the default (``pad=None``) never pads.
+
     Requires the optional ``torch`` and ``tensordict`` packages.
     """
     torch, TensorDict = _require_tensordict()
+
+    if pad is not None:
+        if pad not in ("before", "after"):
+            raise ValueError(f"pad must be 'before', 'after', or None, got {pad!r}")
+        if include_all_observations:
+            raise ValueError(
+                "pad already includes all_observations/all_infos in place of "
+                "observation/next_observation/info/next_info; pass "
+                "include_all_observations=False (the default) with pad"
+            )
 
     def convert(arr):
         tensor = torch.as_tensor(arr)
@@ -206,13 +259,23 @@ def batch_to_tensordict(
 
     converted = batch.map(convert)
 
+    if pad is not None and converted._squeeze:
+        raise ValueError("pad requires a Segment/Batch with a time dimension")
+
     data: dict[str, Any] = {}
-    for role in ("observation", "action", "reward", "next_observation", "info", "next_info"):
+    roles = (
+        ("action", "reward")
+        if pad is not None
+        else ("observation", "action", "reward", "next_observation", "info", "next_info")
+    )
+    for role in roles:
         entry = _role_entry(getattr(converted, role))
         if entry is not None:
+            if pad is not None:
+                entry = _pad_entry(entry, converted._time_axis, pad)
             data[role] = entry
 
-    if include_all_observations:
+    if include_all_observations or pad is not None:
         data["all_observations"] = _role_entry(converted.all_observations)
         all_infos_entry = _role_entry(converted.all_infos)
         if all_infos_entry is not None:
@@ -222,14 +285,17 @@ def batch_to_tensordict(
     for flag in ("mask", "terminated", "truncated"):
         value = getattr(converted, flag)
         if value is not None:
+            if pad is not None:
+                value = _pad_time(value, converted._time_axis, pad)
             data[flag] = value
             if batch_size is None:
                 # Flag arrays carry no per-field trailing dims, so their
                 # shape is exactly the batch dims. Drop the time dim (its
                 # last axis) when all_observations joined the entries with
-                # one extra row — unless it was already squeezed away, in
-                # which case there's no time dim left in the flags to drop.
-                if not include_all_observations or converted._squeeze:
+                # one extra row and wasn't itself padded to match — unless
+                # it was already squeezed away, in which case there's no
+                # time dim left in the flags to drop.
+                if pad is not None or not include_all_observations or converted._squeeze:
                     batch_dims = value.ndim
                 else:
                     batch_dims = converted._time_axis

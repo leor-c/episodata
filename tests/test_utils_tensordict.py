@@ -141,6 +141,43 @@ def test_missing_flags_raises_clear_error():
         batch_to_tensordict(batch)
 
 
+def test_pad_before_gives_uniform_batch_size_and_zero_first_row():
+    batch = _make_batch()
+    td = batch_to_tensordict(batch, pad="before")
+    assert set(td.keys()) == {"all_observations", "action", "reward", "terminated", "truncated", "mask"}
+    assert td.batch_size == torch.Size([B, LP1])
+    assert td["all_observations"]["cam1"].shape == (B, LP1, 4, 4, 3)
+    assert td["mask"].shape == (B, LP1)
+    reward = td["reward"]
+    assert torch.all(reward[:, 0] == 0)
+    assert torch.equal(reward[:, 1:], torch.as_tensor(batch.reward))
+
+
+def test_pad_after_gives_uniform_batch_size_and_zero_last_row():
+    batch = _make_batch()
+    td = batch_to_tensordict(batch, pad="after")
+    assert td.batch_size == torch.Size([B, LP1])
+    reward = td["reward"]
+    assert torch.all(reward[:, -1] == 0)
+    assert torch.equal(reward[:, :-1], torch.as_tensor(batch.reward))
+
+
+def test_pad_drops_role_length_observation_entries_in_favor_of_all_observations():
+    td = batch_to_tensordict(_make_batch(), pad="after")
+    assert "observation" not in td
+    assert "next_observation" not in td
+
+
+def test_pad_conflicts_with_include_all_observations():
+    with pytest.raises(ValueError, match="include_all_observations"):
+        batch_to_tensordict(_make_batch(), pad="before", include_all_observations=True)
+
+
+def test_pad_rejects_invalid_value():
+    with pytest.raises(ValueError, match="pad must be"):
+        batch_to_tensordict(_make_batch(), pad="sideways")
+
+
 def test_missing_torch_raises_clear_import_error(monkeypatch):
     import builtins
 
