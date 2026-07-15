@@ -11,6 +11,10 @@ requires_zarr = pytest.mark.skipif(
 requires_gym = pytest.mark.skipif(
     importlib.util.find_spec("gymnasium") is None, reason="gymnasium not installed"
 )
+requires_tensordict = pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None or importlib.util.find_spec("tensordict") is None,
+    reason="torch/tensordict not installed",
+)
 
 
 def make_episode(length: int, seed: int = 0, terminated: bool = True):
