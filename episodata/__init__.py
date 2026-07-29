@@ -18,6 +18,7 @@ from .backends import (
 from .dataset import Dataset
 from .episode import Episode, EpisodeWriter
 from .fields import FieldGroup, Fields
+from .sampler import Sampler, UniformSampler
 from .sampling import SegmentDataset, SegmentStream
 from .schema import DatasetSchema, FieldSpec
 from .segment import Batch, Segment
@@ -37,11 +38,13 @@ __all__ = [
     "Fields",
     "MemoryBackend",
     "NpzDirectoryBackend",
+    "Sampler",
     "Segment",
     "SegmentDataset",
     "SegmentStream",
     "Selection",
     "StorageBackend",
+    "UniformSampler",
     "VectorWriter",
     "ZarrBackend",
     "get_backend",

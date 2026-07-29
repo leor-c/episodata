@@ -17,6 +17,7 @@ import numpy as np
 
 from .backends.base import Selection, StorageBackend, get_backend
 from .episode import Episode, EpisodeWriter
+from .sampler import Sampler
 from .normalize import (
     normalize_action_out_episode,
     normalize_episode,
@@ -296,7 +297,7 @@ class Dataset:
                 fields: dict[str, np.ndarray] = {}
                 for key in keys:
                     try:
-                        payload = self.backend.read_fields([key], selection)
+                        payload = self.backend.read_fields([key], [selection])[0]
                     except KeyError:  # field absent from this episode
                         continue
                     fields.update(payload)
@@ -323,6 +324,8 @@ class Dataset:
         seed: int | None = None,
         filter: Callable[[Episode], bool] | None = None,
         pad: str | None = "suffix",
+        sampler: Sampler | None = None,
+        read_chunk_size: int | None = None,
     ) -> SegmentStream:
         """Build a segment stream. See :class:`SegmentStream`.
 
@@ -331,7 +334,9 @@ class Dataset:
         episodes shorter than the requested length: zero-padded at the end
         (``"suffix"``, default) or at the start (``"prefix"``), with
         ``Batch.mask`` marking real transitions; ``None`` skips short
-        episodes.
+        episodes. ``sampler`` controls which segments get drawn (uniform
+        with replacement by default); ``read_chunk_size`` controls how many
+        segments are fetched per backend call — see :class:`SegmentStream`.
         """
         return SegmentStream(
             self,
@@ -344,6 +349,8 @@ class Dataset:
             seed=seed,
             filter=filter,
             pad=pad,
+            sampler=sampler,
+            read_chunk_size=read_chunk_size,
         )
 
     def segments(
@@ -381,11 +388,14 @@ class Dataset:
         """One-shot transition sampling; see :meth:`SegmentStream.sample_transitions`.
 
         Sampled without padding: a padded segment would fabricate a
-        transition into a zero-filled next observation.
+        transition into a zero-filled next observation. Each call builds
+        and discards its own stream, so ``read_chunk_size`` is pinned to
+        ``batch_size`` — the chunked-fetch buffering that pays off for a
+        long-lived stream would just be wasted over-fetching here.
         """
         stream = self.segment_stream(
             fields=fields, batch_size=batch_size, sequence_length=1, seed=seed, filter=filter,
-            pad=None,
+            pad=None, read_chunk_size=batch_size,
         )
         return stream.sample_transitions()
 

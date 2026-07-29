@@ -71,9 +71,9 @@ class MemoryBackend(StorageBackend):
         return self._episodes[episode_id].ongoing
 
     def read_fields(
-        self, field_ids: Sequence[str], selection: Selection
-    ) -> Mapping[str, np.ndarray]:
-        return self._buffers.read(field_ids, selection)
+        self, field_ids: Sequence[str], selections: Sequence[Selection]
+    ) -> Sequence[Mapping[str, np.ndarray]]:
+        return [self._buffers.read(field_ids, selection) for selection in selections]
 
     def create_episode(self) -> int:
         self._episodes.append(_Episode())

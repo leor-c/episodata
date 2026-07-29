@@ -91,7 +91,7 @@ class Episode:
                 for k in fields
             }
         else:
-            payload = self._backend.read_fields(fields, Selection(self.id, start, stop + 1))
+            payload = self._backend.read_fields(fields, [Selection(self.id, start, stop + 1)])[0]
             rows = dict(payload)
         terminated = np.zeros(stop - start, dtype=bool)
         truncated = np.zeros(stop - start, dtype=bool)

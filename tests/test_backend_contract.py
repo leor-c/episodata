@@ -55,7 +55,7 @@ def test_append_steps_batch_default_matches_looped():
             assert dataset.backend.episode_length(episode_id) == 1
             # a backend-level check: read the raw row across the boundary
             read = dataset.backend.read_fields(
-                ["state", "reward"], Selection(episode_id, 0, 1)
-            )
+                ["state", "reward"], [Selection(episode_id, 0, 1)]
+            )[0]
             assert np.array_equal(read["state"][0], rows["state"][i])
             assert read["reward"][0] == rows["reward"][i]

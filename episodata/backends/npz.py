@@ -127,19 +127,31 @@ class NpzDirectoryBackend(StorageBackend):
     # -- reads ---------------------------------------------------------------
 
     def read_fields(
-        self, field_ids: Sequence[str], selection: Selection
-    ) -> Mapping[str, np.ndarray]:
-        episode_id = selection.episode_id
-        if episode_id in self._buffers:
-            return self._buffers.read(field_ids, selection)
-        path = os.path.join(self._root, self._records[episode_id].file)
-        out: dict[str, np.ndarray] = {}
-        with np.load(path) as archive:
-            for key in field_ids:
-                if key not in archive:
-                    raise KeyError(f"episode {episode_id} has no field {key!r}")
-                out[key] = archive[key][selection.start : selection.stop]
-        return out
+        self, field_ids: Sequence[str], selections: Sequence[Selection]
+    ) -> Sequence[Mapping[str, np.ndarray]]:
+        results: list[Mapping[str, np.ndarray] | None] = [None] * len(selections)
+        # Group by episode so a batch with repeated/nearby episodes opens
+        # each .npz archive at most once instead of once per selection.
+        by_episode: dict[int, list[int]] = {}
+        for position, selection in enumerate(selections):
+            by_episode.setdefault(selection.episode_id, []).append(position)
+
+        for episode_id, positions in by_episode.items():
+            if episode_id in self._buffers:
+                for position in positions:
+                    results[position] = self._buffers.read(field_ids, selections[position])
+                continue
+            path = os.path.join(self._root, self._records[episode_id].file)
+            with np.load(path) as archive:
+                for key in field_ids:
+                    if key not in archive:
+                        raise KeyError(f"episode {episode_id} has no field {key!r}")
+                for position in positions:
+                    selection = selections[position]
+                    results[position] = {
+                        key: archive[key][selection.start : selection.stop] for key in field_ids
+                    }
+        return results
 
     # -- writes ----------------------------------------------------------------
 

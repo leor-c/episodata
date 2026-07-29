@@ -176,3 +176,58 @@ def test_online_episodes_become_sampleable(dataset):
     dataset.add_episode(make_episode(20, seed=3))
     batch = stream.sample()
     assert batch.reward.shape == (2, 15)
+
+
+def test_read_chunk_size_buffers_multiple_batches_with_same_shape(dataset):
+    """A small read_chunk_size forces multiple internal refills across many
+    sample() calls; every returned batch must still have the requested
+    shape regardless of chunking."""
+    stream = dataset.segment_stream(
+        fields=["reward"], sequence_length=4, batch_size=3, seed=0, read_chunk_size=6
+    )
+    for _ in range(10):  # several refills at read_chunk_size=6, batch_size=3
+        batch = stream.sample()
+        assert batch.reward.shape == (3, 4)
+        assert batch.mask.shape == (3, 4)
+
+
+def test_read_chunk_size_default_does_not_change_correctness(dataset):
+    """The default (auto) read_chunk_size batches many samples per backend
+    call; each individual batch must still be internally consistent (mask
+    matches real segment length) regardless of chunk grain."""
+    stream = dataset.segment_stream(fields=["reward"], sequence_length=8, batch_size=4, seed=0)
+    batch = stream.sample()
+    for row in range(4):
+        length = int(batch.mask[row].sum())
+        assert batch.mask[row, :length].all()
+        assert np.all(batch.reward[row, length:] == 0)
+
+
+def test_custom_sampler_is_used(dataset):
+    from episodata import Sampler
+
+    class AlwaysZeroSampler:
+        def sample(self, index, batch_size):
+            return np.zeros(batch_size, dtype=np.int64)
+
+    stream = dataset.segment_stream(
+        fields=["reward"], sequence_length=4, batch_size=5, sampler=AlwaysZeroSampler()
+    )
+    batch = stream.sample()
+    expected = dataset.segments(fields=["reward"], sequence_length=4)[0].reward
+    for row in range(5):
+        assert np.array_equal(batch.reward[row], expected)
+
+
+def test_uniform_sampler_reproducible_with_seed():
+    from episodata.sampler import UniformSampler
+
+    class _FakeSegmentIndex:
+        def __len__(self):
+            return 100
+
+    index = _FakeSegmentIndex()
+    a = UniformSampler(seed=7).sample(index, 20)
+    b = UniformSampler(seed=7).sample(index, 20)
+    assert np.array_equal(a, b)
+    assert a.min() >= 0 and a.max() < 100

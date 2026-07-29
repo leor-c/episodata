@@ -106,12 +106,19 @@ class StorageBackend(abc.ABC):
 
     @abc.abstractmethod
     def read_fields(
-        self, field_ids: Sequence[str], selection: Selection
-    ) -> Mapping[str, np.ndarray]:
-        """Read the given logical fields over a temporal selection.
+        self, field_ids: Sequence[str], selections: Sequence[Selection]
+    ) -> Sequence[Mapping[str, np.ndarray]]:
+        """Read the given logical fields over many temporal selections in
+        one batched call.
 
-        Returns arrays shaped ``[selection.length, *field.shape]`` in the
-        logical dtype/layout, keyed by field id.
+        Returns one ``Mapping`` per selection, in the same order as
+        ``selections``, each keyed by field id with arrays shaped
+        ``[selection.length, *field.shape]`` in the logical dtype/layout.
+        A single-selection read is just the degenerate ``len(selections) ==
+        1`` case — there is no separate per-item code path, so backends
+        with genuine random-access overhead (e.g. many small chunked reads)
+        can amortize it across the whole batch instead of paying it once
+        per selection.
         """
 
     # -- writes (online append) ----------------------------------------------

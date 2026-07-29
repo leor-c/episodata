@@ -196,19 +196,51 @@ class ZarrBackend(StorageBackend):
     # -- reads ---------------------------------------------------------------
 
     def read_fields(
-        self, field_ids: Sequence[str], selection: Selection
-    ) -> Mapping[str, np.ndarray]:
-        episode_id = selection.episode_id
-        if episode_id in self._buffers:
-            return self._buffers.read(field_ids, selection)
-        start = self._start[episode_id]
-        out: dict[str, np.ndarray] = {}
-        for key in field_ids:
-            if key not in self._present[episode_id]:
-                raise KeyError(f"episode {episode_id} has no field {key!r}")
-            array = self._group[f"fields/{key}"]
-            out[key] = array[start + selection.start : start + selection.stop]
-        return out
+        self, field_ids: Sequence[str], selections: Sequence[Selection]
+    ) -> Sequence[Mapping[str, np.ndarray]]:
+        """Batched read: one fancy-index gather per field across the whole
+        batch, instead of one zarr call per selection.
+
+        zarr-python's synchronous API pays a large fixed dispatch cost per
+        call regardless of payload size (its sync-over-async wrapper), so
+        many small single-selection reads are dramatically slower than the
+        same data gathered in one vectorized call. Ongoing (buffered, not
+        yet finalized) episodes aren't in the flat per-field zarr arrays
+        yet, so those selections are read individually from the in-memory
+        buffer (already cheap) and merged back in original order.
+        """
+        results: list[dict[str, np.ndarray] | None] = [None] * len(selections)
+        finalized_positions: list[int] = []
+        for position, selection in enumerate(selections):
+            if selection.episode_id in self._buffers:
+                results[position] = dict(self._buffers.read(field_ids, selection))
+            else:
+                finalized_positions.append(position)
+
+        if finalized_positions:
+            finalized_selections = [selections[p] for p in finalized_positions]
+            lengths = [s.length for s in finalized_selections]
+            split_points = np.cumsum(lengths)[:-1]
+            abs_rows = np.concatenate(
+                [
+                    np.arange(
+                        self._start[s.episode_id] + s.start, self._start[s.episode_id] + s.stop
+                    )
+                    for s in finalized_selections
+                ]
+            )
+            for position in finalized_positions:
+                results[position] = {}
+            for key in field_ids:
+                for p, s in zip(finalized_positions, finalized_selections):
+                    if key not in self._present[s.episode_id]:
+                        raise KeyError(f"episode {s.episode_id} has no field {key!r}")
+                array = self._group[f"fields/{key}"]
+                gathered = array[abs_rows]
+                pieces = np.split(gathered, split_points, axis=0)
+                for position, piece in zip(finalized_positions, pieces):
+                    results[position][key] = piece
+        return results
 
     # -- writes ----------------------------------------------------------------
 

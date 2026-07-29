@@ -163,11 +163,11 @@ def test_missing_optional_field_raises_keyerror(tmp_path):
 
     for ds in (dataset, Dataset.open(str(tmp_path / "ds"))):
         # raw rows: the reset row precedes the per-step values
-        assert np.array_equal(ds.backend.read_fields(["a"], Selection(0, 1, 4))["a"], values)
+        assert np.array_equal(ds.backend.read_fields(["a"], [Selection(0, 1, 4)])[0]["a"], values)
         with pytest.raises(KeyError):
-            ds.backend.read_fields(["b"], Selection(0, 1, 4))
+            ds.backend.read_fields(["b"], [Selection(0, 1, 4)])
         assert np.array_equal(
-            ds.backend.read_fields(["b"], Selection(1, 1, 4))["b"], 2 * values
+            ds.backend.read_fields(["b"], [Selection(1, 1, 4)])[0]["b"], 2 * values
         )
 
 

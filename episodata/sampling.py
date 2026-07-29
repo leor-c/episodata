@@ -24,17 +24,20 @@ batches — one source of truth for segment semantics.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterator
+from collections import deque
+from collections.abc import Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
 from .backends.base import Selection
+from .sampler import Sampler, UniformSampler
 from .segment import Batch, Segment
 
 if TYPE_CHECKING:
     from .dataset import Dataset
     from .episode import Episode
+    from .schema import DatasetSchema
 
 
 def _resolve_segment_length(
@@ -85,6 +88,38 @@ def pad_segment(
         else:
             mask[num_transitions:] = False
     return rows, mask
+
+
+def pad_and_stack_segments(
+    per_item: Sequence[Mapping[str, np.ndarray]],
+    fields: Sequence[str],
+    schema: "DatasetSchema",
+    segment_length: int,
+    mode: str | None,
+) -> dict[str, np.ndarray]:
+    """Vectorized equivalent of stacking ``pad_segment(item, ...)`` over a
+    batch: builds each field's ``[B, L+1, *shape]`` buffer directly by
+    scattering each item's (un-padded) rows into a zero-initialized array,
+    instead of padding + ``np.stack`` per item.
+
+    Preallocating from the schema (not the read data) means this is correct
+    even when every item in the batch happens to be short/padded. The
+    per-item scatter loop is pure memory copy, no I/O — negligible next to
+    the batched backend read it replaces N of."""
+    B = len(per_item)
+    out: dict[str, np.ndarray] = {}
+    for key in fields:
+        spec = schema.field(key)
+        buf = np.zeros((B, segment_length + 1, *spec.shape), dtype=spec.dtype)
+        for b, item in enumerate(per_item):
+            arr = item[key]
+            n = arr.shape[0]
+            if mode == "prefix":
+                buf[b, segment_length + 1 - n :] = arr
+            else:
+                buf[b, :n] = arr
+        out[key] = buf
+    return out
 
 
 @dataclasses.dataclass(frozen=True)
@@ -163,6 +198,44 @@ class SegmentIndex:
         )
         return selection, terminal_offset
 
+    def resolve_many(
+        self, flat_indices: np.ndarray
+    ) -> tuple[list[Selection], list[int | None]]:
+        """Vectorized equivalent of calling :meth:`resolve` once per index
+        in ``flat_indices`` — one ``np.searchsorted`` call for the whole
+        batch instead of one per index, and vectorized arithmetic for the
+        rest. Building the actual ``Selection`` objects still needs a
+        Python loop (dataclasses aren't vectorizable), but that loop is
+        pure attribute assignment, not I/O."""
+        flat_indices = np.asarray(flat_indices, dtype=np.int64)
+        n = len(self)
+        if flat_indices.size and (
+            bool(flat_indices.min() < 0) or bool(flat_indices.max() >= n)
+        ):
+            bad = flat_indices[(flat_indices < 0) | (flat_indices >= n)]
+            raise IndexError(int(bad[0]))
+
+        slots = np.searchsorted(self.cumulative_segments, flat_indices, side="right")
+        episode_ids = self.episode_ids[slots]
+        previous = np.where(slots > 0, self.cumulative_segments[np.clip(slots - 1, 0, None)], 0)
+        starts = flat_indices - previous
+        lengths = self.lengths[slots]
+        stops = np.minimum(starts + self.segment_length, lengths)
+        lasts = lengths - 1
+        pad_front = self.segment_length - (stops - starts) if self.pad == "prefix" else 0
+        has_terminal = (starts <= lasts) & (lasts < starts + self.segment_length)
+        terminal_offsets_arr = lasts - starts + pad_front
+
+        selections = [
+            Selection(int(episode_ids[i]), int(starts[i]), int(stops[i]) + 1)
+            for i in range(len(flat_indices))
+        ]
+        terminal_offsets = [
+            int(terminal_offsets_arr[i]) if has_terminal[i] else None
+            for i in range(len(flat_indices))
+        ]
+        return selections, terminal_offsets
+
 
 class SegmentDataset:
     """Map-style, indexable view over fixed-length segments of a dataset.
@@ -186,10 +259,18 @@ class SegmentDataset:
         for batch in loader: ...  # episodata.Batch, arrays [B, L, ...]
 
     No torch import happens here or anywhere in the core library — this
-    class only implements ``__len__``/``__getitem__``, which satisfies
-    ``DataLoader``'s map-style protocol by duck typing. It works equally
-    well without torch installed at all (e.g. ``segments[i]`` directly, or
-    your own multiprocessing).
+    class only implements ``__len__``/``__getitem__``/``__getitems__``,
+    which satisfies ``DataLoader``'s map-style protocol by duck typing. It
+    works equally well without torch installed at all (e.g. ``segments[i]``
+    directly, or your own multiprocessing).
+
+    ``__getitems__`` is ``DataLoader``'s batched-fetch hook: when present,
+    ``DataLoader`` calls it once per training batch instead of looping
+    ``__getitem__`` once per index, so the ``DataLoader`` usage above is
+    fast even on backends (e.g. zarr) where a single-item read has real
+    per-call overhead. :meth:`fetch` is the same batched read taken one
+    step further — skips per-item ``Segment`` objects entirely and returns
+    a stacked ``Batch`` directly; it's what :class:`SegmentStream` uses.
 
     Segments are windows of transitions and ``sequence_length`` counts
     transitions. An episode shorter than the segment yields one segment,
@@ -239,7 +320,7 @@ class SegmentDataset:
 
     def __getitem__(self, i: int) -> Segment:
         selection, terminal_offset = self._index.resolve(i)
-        rows = dict(self.dataset.backend.read_fields(self.fields, selection))
+        rows = dict(self.dataset.backend.read_fields(self.fields, [selection])[0])
         rows, mask = pad_segment(rows, selection.length - 1, self.segment_length, self.pad)
         terminated = np.zeros(self.segment_length, dtype=bool)
         truncated = np.zeros(self.segment_length, dtype=bool)
@@ -249,6 +330,76 @@ class SegmentDataset:
             truncated[terminal_offset] = backend.episode_truncated(selection.episode_id)
         return Segment(
             rows, self.dataset.schema, terminated=terminated, truncated=truncated, mask=mask
+        )
+
+    def __getitems__(self, indices: Sequence[int]) -> list[Segment]:
+        """``torch.utils.data.DataLoader``'s batched-fetch hook: when a
+        ``Dataset`` defines this, the default fetcher calls it once per
+        training batch instead of looping ``__getitem__`` once per index,
+        so a plain ``DataLoader(segments, batch_size=N, collate_fn=segments.
+        collate)`` gets a faster (one batched backend read, not N) path for
+        free. Still returns a list of per-item ``Segment``s — same
+        contract ``collate_fn`` already expects — unlike :meth:`fetch`,
+        which skips straight to a stacked ``Batch``."""
+        selections, terminal_offsets = self._index.resolve_many(np.asarray(indices))
+        per_item = self.dataset.backend.read_fields(self.fields, selections)
+        backend = self.dataset.backend
+        segments = []
+        for rows, selection, terminal_offset in zip(per_item, selections, terminal_offsets):
+            padded_rows, mask = pad_segment(
+                dict(rows), selection.length - 1, self.segment_length, self.pad
+            )
+            terminated = np.zeros(self.segment_length, dtype=bool)
+            truncated = np.zeros(self.segment_length, dtype=bool)
+            if terminal_offset is not None:
+                terminated[terminal_offset] = backend.episode_terminated(selection.episode_id)
+                truncated[terminal_offset] = backend.episode_truncated(selection.episode_id)
+            segments.append(
+                Segment(
+                    padded_rows, self.dataset.schema,
+                    terminated=terminated, truncated=truncated, mask=mask,
+                )
+            )
+        return segments
+
+    def fetch(self, indices: Sequence[int]) -> Batch:
+        """Vectorized equivalent of ``self.collate(self.__getitems__(indices))``:
+        indices in, one batched backend read, a stacked ``Batch`` out — no
+        per-item ``Segment`` objects, no per-item ``np.stack``. The
+        canonical entry point every batched sampling path (``SegmentStream``,
+        ``Dataset.sample_transitions``) routes through."""
+        indices = np.asarray(indices)
+        selections, terminal_offsets = self._index.resolve_many(indices)
+        per_item = self.dataset.backend.read_fields(self.fields, selections)
+        rows = pad_and_stack_segments(
+            per_item, self.fields, self.dataset.schema, self.segment_length, self.pad
+        )
+
+        B = len(indices)
+        mask = np.ones((B, self.segment_length), dtype=bool)
+        terminated = np.zeros((B, self.segment_length), dtype=bool)
+        truncated = np.zeros((B, self.segment_length), dtype=bool)
+        backend = self.dataset.backend
+        for b, (selection, terminal_offset) in enumerate(zip(selections, terminal_offsets)):
+            num_transitions = selection.length - 1
+            pad = self.segment_length - num_transitions
+            if pad:
+                if self.pad == "prefix":
+                    mask[b, :pad] = False
+                else:
+                    mask[b, num_transitions:] = False
+            if terminal_offset is not None:
+                terminated[b, terminal_offset] = backend.episode_terminated(selection.episode_id)
+                truncated[b, terminal_offset] = backend.episode_truncated(selection.episode_id)
+
+        return Batch(
+            rows,
+            self.dataset.schema,
+            context_length=self.context_length,
+            target_length=self.target_length,
+            terminated=terminated,
+            truncated=truncated,
+            mask=mask,
         )
 
     def collate(self, items: list[Segment]) -> Batch:
@@ -274,9 +425,24 @@ class SegmentStream:
     """Infinite, shuffled, with-replacement segment stream.
 
     A thin sampling policy over :class:`SegmentDataset` (exposed as
-    ``self.segments``): each :meth:`sample` refreshes the view — a no-op
-    unless the dataset grew — draws ``batch_size`` uniform segment
-    indices, and collates the indexed segments into a :class:`Batch`.
+    ``self.segments``): each :meth:`sample` draws indices from ``sampler``
+    (uniform with replacement by default — see :class:`~episodata.sampler.
+    UniformSampler`) and turns them into a :class:`Batch` via
+    :meth:`SegmentDataset.fetch`.
+
+    Internally, ``sample()`` doesn't fetch one ``batch_size`` at a time:
+    ``read_chunk_size`` (default ``max(batch_size, 2048)``) controls how
+    many segments are drawn and fetched *in one backend call*, buffering
+    ``read_chunk_size // batch_size`` ready-to-serve batches before the
+    next backend call. This is what actually makes sampling fast on
+    backends with real per-call overhead (e.g. zarr): batching to just
+    ``batch_size`` barely helps, batching far larger does — see the
+    library's benchmarks. The public contract (iterate for ``Batch``es) is
+    unchanged; this is purely an internal efficiency knob. One
+    consequence: the segment index (see :meth:`SegmentDataset.refresh`) is
+    re-snapshotted once per refill, not once per ``sample()`` call, so a
+    growing dataset's newest episodes become visible with a bounded delay
+    of up to one chunk's worth of batches, not immediately.
     """
 
     def __init__(
@@ -291,6 +457,8 @@ class SegmentStream:
         seed: int | None = None,
         filter: Callable[["Episode"], bool] | None = None,
         pad: str | None = "suffix",
+        sampler: Sampler | None = None,
+        read_chunk_size: int | None = None,
     ):
         self.segments = SegmentDataset(
             dataset,
@@ -303,7 +471,11 @@ class SegmentStream:
         )
         self.batch_size = batch_size
         self.shuffle = shuffle
-        self._rng = np.random.default_rng(seed)
+        self.sampler = sampler if sampler is not None else UniformSampler(seed=seed)
+        self.read_chunk_size = (
+            read_chunk_size if read_chunk_size is not None else max(batch_size, 2048)
+        )
+        self._buffer: deque[Batch] = deque()
 
     @property
     def dataset(self) -> "Dataset":
@@ -319,8 +491,7 @@ class SegmentStream:
 
     # -- sampling ---------------------------------------------------------------
 
-    def sample(self) -> Batch:
-        """Draw one batch of segments uniformly over all valid segments."""
+    def _refill(self) -> None:
         segments = self.segments
         segments.refresh()
         if len(segments) == 0:
@@ -329,8 +500,21 @@ class SegmentStream:
                     f"no episode has length >= {segments.segment_length} (after filtering)"
                 )
             raise ValueError("no non-empty episodes to sample from (after filtering)")
-        draws = self._rng.integers(len(segments), size=self.batch_size)
-        return segments.collate([segments[int(i)] for i in draws])
+        chunk_batches = max(1, self.read_chunk_size // self.batch_size)
+        n = chunk_batches * self.batch_size
+        indices = self.sampler.sample(segments._index, n)
+        batch = segments.fetch(indices)
+        for start in range(0, n, self.batch_size):
+            stop = start + self.batch_size
+            self._buffer.append(batch.map(lambda arr, s=start, e=stop: arr[s:e]))
+
+    def sample(self) -> Batch:
+        """Draw one batch of segments (uniform, or per ``sampler``, over
+        all valid segments). See the class docstring for the internal
+        chunked-fetch/staleness trade-off."""
+        if not self._buffer:
+            self._refill()
+        return self._buffer.popleft()
 
     def sample_transitions(self) -> Batch:
         """Draw a batch of single transitions ``(s, a, r, s', done)`` — a
@@ -360,4 +544,4 @@ class SegmentStream:
             segments.refresh()
             for start in range(0, len(segments), self.batch_size):
                 stop = min(start + self.batch_size, len(segments))
-                yield segments.collate([segments[i] for i in range(start, stop)])
+                yield segments.fetch(np.arange(start, stop))

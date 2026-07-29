@@ -278,6 +278,138 @@ def test_torch_dataloader_integration(dataset):
     assert batch.obs["state"].shape == (6, 4, 5)
 
 
+def test_fetch_matches_looped_getitem(dataset):
+    """SegmentDataset.fetch is a vectorized equivalent of collate([self[i]
+    for i in indices]); must agree exactly, including duplicate indices,
+    out-of-order indices, and multiple episodes in one call."""
+    segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=4)
+    idx = np.array([6, 0, 0, 10, 3, 6])  # duplicates + out of order + spans both episodes
+    via_fetch = segments.fetch(idx)
+    via_loop = segments.collate([segments[int(i)] for i in idx])
+    for key in ("front_camera", "state"):
+        assert np.array_equal(via_fetch.obs[key], via_loop.obs[key])
+    assert np.array_equal(via_fetch.action, via_loop.action)
+    assert np.array_equal(via_fetch.terminated, via_loop.terminated)
+    assert np.array_equal(via_fetch.truncated, via_loop.truncated)
+    assert np.array_equal(via_fetch.mask, via_loop.mask)
+
+
+def test_fetch_matches_looped_getitem_with_padding(dataset):
+    """Boundary/short-episode indices needing padding, both directions."""
+    for pad in ("suffix", "prefix"):
+        segments = dataset.segments(fields=["reward"], sequence_length=8, pad=pad)
+        idx = np.array([3, 1, 3, 0])  # index 3 is the padded short-episode segment
+        via_fetch = segments.fetch(idx)
+        via_loop = segments.collate([segments[int(i)] for i in idx])
+        assert np.array_equal(via_fetch.reward, via_loop.reward)
+        assert np.array_equal(via_fetch.mask, via_loop.mask)
+        assert np.array_equal(via_fetch.terminated, via_loop.terminated)
+
+
+def test_fetch_random_with_replacement_matches_looped_getitem(dataset):
+    segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=4)
+    idx = np.random.default_rng(0).integers(len(segments), size=50)
+    via_fetch = segments.fetch(idx)
+    via_loop = segments.collate([segments[int(i)] for i in idx])
+    assert np.array_equal(via_fetch.obs["state"], via_loop.obs["state"])
+    assert np.array_equal(via_fetch.mask, via_loop.mask)
+
+
+def test_getitems_matches_looped_getitem(dataset):
+    segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=4)
+    idx = [6, 0, 0, 10, 3]
+    batched = segments.__getitems__(idx)
+    looped = [segments[i] for i in idx]
+    assert len(batched) == len(looped)
+    for a, b in zip(batched, looped):
+        assert np.array_equal(a.obs["state"], b.obs["state"])
+        assert np.array_equal(a.mask, b.mask)
+        assert np.array_equal(a.terminated, b.terminated)
+
+
+def test_getitems_dataloader_output_unchanged(dataset):
+    """DataLoader picks up __getitems__ automatically (torch's batched-fetch
+    hook) — output must be identical to the pre-existing per-item path."""
+    torch = pytest.importorskip("torch")
+    from torch.utils.data import DataLoader
+
+    segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=4)
+    loader = DataLoader(
+        segments, batch_size=6, shuffle=False, num_workers=0, collate_fn=segments.collate
+    )
+    batch = next(iter(loader))
+    expected = segments.collate([segments[i] for i in range(6)])
+    assert np.array_equal(batch.obs["front_camera"], expected.obs["front_camera"])
+    assert np.array_equal(batch.obs["state"], expected.obs["state"])
+    assert np.array_equal(batch.mask, expected.mask)
+
+
+def test_resolve_many_matches_looped_resolve(dataset):
+    segments = dataset.segments(fields=["reward"], sequence_length=4)
+    idx = np.array([6, 0, 10, 3, 6, 1])
+    selections, terminal_offsets = segments._index.resolve_many(idx)
+    for i, flat_idx in enumerate(idx):
+        expected_selection, expected_terminal_offset = segments._index.resolve(int(flat_idx))
+        assert selections[i] == expected_selection
+        assert terminal_offsets[i] == expected_terminal_offset
+
+
+def test_read_fields_batch_matches_looped_single_selection(dataset):
+    from episodata.backends.base import Selection
+
+    backend = dataset.backend
+    selections = [Selection(0, 0, 4), Selection(1, 0, 4), Selection(0, 0, 4), Selection(1, 3, 6)]
+    batched = backend.read_fields(["reward"], selections)
+    looped = [backend.read_fields(["reward"], [s])[0] for s in selections]
+    assert len(batched) == len(looped)
+    for a, b in zip(batched, looped):
+        assert np.array_equal(a["reward"], b["reward"])
+
+
+def test_read_fields_mixed_ongoing_and_finalized(backend_name, dataset_path):
+    """A batch spanning both an already-finalized episode and a still-open
+    (buffered) one must recombine results in original order."""
+    from episodata import Dataset
+    from episodata.backends.base import Selection
+
+    episodes = [make_episode(10, seed=0)]
+    ds = Dataset.from_episodes(episodes, path=dataset_path, backend=backend_name)
+    ongoing = make_episode(5, seed=7)
+    writer = ds.new_episode(ongoing["initial_observation"])
+    steps = {
+        "observations": ongoing["observations"],
+        "actions": ongoing["actions"],
+        "rewards": ongoing["rewards"],
+    }
+    writer.add_steps(steps)
+    assert ds.episode(1).ongoing
+
+    selections = [Selection(1, 0, 4), Selection(0, 0, 4), Selection(1, 2, 5), Selection(0, 6, 9)]
+    results = ds.backend.read_fields(["reward"], selections)
+    for position, selection in enumerate(selections):
+        expected = ds.backend.read_fields(["reward"], [selection])[0]
+        assert np.array_equal(results[position]["reward"], expected["reward"])
+
+
+def test_read_fields_keyerror_parity(backend_name, dataset_path):
+    from episodata import Dataset, DatasetSchema, FieldSpec
+    from episodata.backends.base import Selection
+
+    schema = DatasetSchema(
+        fields=[
+            FieldSpec("a", (2,), "float32"),
+            FieldSpec("b", (2,), "float32", optional=True),
+        ]
+    )
+    ds = Dataset.create(schema, path=dataset_path, backend=backend_name)
+    values = np.ones((3, 2), dtype=np.float32)
+    initial = np.full(2, 7, dtype=np.float32)
+    ds.add_episode({"initial_observation": {"a": initial}, "observations": {"a": values}})
+
+    with pytest.raises(KeyError):
+        ds.backend.read_fields(["b"], [Selection(0, 1, 4)])
+
+
 def test_torch_dataloader_multiprocess(backend_name, dataset_path):
     """Real multi-worker read parallelism only matters for a disk-backed
     backend (npz_directory does synchronous decompression per read)."""
