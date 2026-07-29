@@ -12,7 +12,7 @@ import pytest
 from episodata import Dataset, DatasetSchema, FieldSpec, Selection
 from tests.conftest import make_episode, make_steps
 
-pytest.importorskip("zarr")
+pytest.importorskip("tensorstore")
 
 
 def make_dataset(path, lengths=(10, 7), **backend_options):
@@ -45,6 +45,25 @@ def test_reopen_round_trip(tmp_path):
     for i, episode in enumerate(episodes):
         assert_episode_equal(reopened, i, episode)
     assert reopened.episode(0).terminated and not reopened.episode(1).terminated
+
+
+def test_store_is_readable_by_plain_zarr_python(tmp_path):
+    """The backend writes via TensorStore, but the on-disk layout is still
+    plain zarr v3 — nothing here is TensorStore-specific. A field array and
+    an index array must both be directly openable and correct through
+    zarr-python, with no episodata/TensorStore involvement at all."""
+    zarr = pytest.importorskip("zarr")
+    dataset, episodes = make_dataset(tmp_path / "ds", lengths=(10,))
+    dataset.flush()
+
+    field_path = str(tmp_path / "ds" / "data.zarr" / "fields" / "front_camera")
+    array = zarr.open_array(field_path, mode="r")
+    # row 0 is the reset observation, rows 1: are the per-step observations
+    assert np.array_equal(array[1:], episodes[0]["observations"]["front_camera"])
+
+    index_path = str(tmp_path / "ds" / "data.zarr" / "index" / "start")
+    index_array = zarr.open_array(index_path, mode="r")
+    assert index_array[:].tolist() == [0]
 
 
 def test_open_dispatches_npz_from_manifest(tmp_path):
@@ -123,8 +142,8 @@ def test_out_of_order_finalize_of_interleaved_episodes(tmp_path):
 def test_reads_across_chunk_boundaries(tmp_path):
     # Tiny chunks force every read to span several compressed chunks.
     dataset, episodes = make_dataset(tmp_path / "ds", lengths=(50,), chunk_bytes=256)
-    array = dataset.backend._group["fields/front_camera"]
-    assert array.chunks[0] < 50
+    store = dataset.backend._field_arrays["front_camera"]
+    assert store.chunk_layout.write_chunk.shape[0] < 50
     for start, stop in [(0, 50), (3, 11), (17, 18), (30, 49)]:
         segment = dataset.episode(0).segment(start, stop)
         assert np.array_equal(

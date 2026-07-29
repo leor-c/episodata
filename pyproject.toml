@@ -3,11 +3,11 @@ name = "episodata"
 version = "0.1.0"
 description = "Unified episode dataset library for world models and control"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.24", "zarr>=3"]
+dependencies = ["numpy>=1.24", "tensorstore>=0.1"]
 
 [project.optional-dependencies]
 gym = ["gymnasium>=0.29"]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "zarr>=3"]
 
 [build-system]
 requires = ["hatchling"]
