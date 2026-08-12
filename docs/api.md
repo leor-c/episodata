@@ -1,48 +1,46 @@
-# Implemented API (v1)
+# API reference
 
-The implementation layers modules so that each depends only on the ones
-above it:
+This is the compact reference for Episodata's public API. Import core types
+from `episodata`; framework helpers live in `episodata.utils`.
 
-| Module | Layer | Contents |
-|---|---|---|
-| `schema.py` | logical spec | `FieldSpec`, `DatasetSchema` — serializable, authoritative, no array data |
-| `fields.py` | generic field views | `Fields` (one role's flat named arrays + field/group access), `FieldGroup` |
-| `segment.py` | temporal containers | `Segment` (transition-aligned fields + per-transition flags), `Batch` (leading batch dim, context/target slicing) |
-| `episode.py` | trajectory views | `Episode` (lazy read view), `EpisodeWriter` (online append handle) |
-| `vector.py` | trajectory views | `VectorWriter` — N parallel envs, next-step autoreset |
-| `sampling.py` | query & sampling | `SegmentStream` (stream), `SegmentDataset` (map-style), `SegmentIndex` |
-| `dataset.py` | entry point | `Dataset` — ties schema, backend, episodes and queries together |
-| `backends/` | storage | `StorageBackend` contract; `memory`, `npz_directory`, `zarr` |
-| `normalize.py` | write boundary | canonical episode/step dicts, `/`-path flattening, alignment resolution and shifts |
-| `action_out.py` | write boundary | `ActionOutWriter` — D4RL-style alignment converted at write time |
+## Conventions
 
-The spec layer (`schema.py`) never touches array data; the field views
-(`fields.py`) are runtime views that depend on the schema, not the other way
-around. Storage sees only flat field keys and temporal selections — groups,
-roles and segments are all reconstructed above the storage boundary.
+- All user-facing lengths count transitions (environment steps).
+- A segment of length `L` has role arrays shaped `[L, ...]` and an underlying
+  observation sequence shaped `[L + 1, ...]`.
+- Batched equivalents add a leading `B` dimension.
+- Field `shape` is always per step; it excludes time and batch dimensions.
+- `terminated` and `truncated` remain separate.
+- `mask` is true for real transitions and false for padding.
 
-## Key signatures
+## Dataset
 
-**Dataset** — construction, writes, queries:
+`Dataset` is the entry point for construction, access, writes, sampling, and
+backend migration.
 
-```python
+```text
 class Dataset:
     @classmethod
-    def create(cls, schema, path=None, backend=None, **backend_options) -> Dataset
-        # backend defaults to "memory" without a path, "npz_directory" with one
+    def create(
+        cls, schema, path=None, backend=None, **backend_options
+    ) -> Dataset
+
     @classmethod
-    def from_episodes(cls, episodes, schema=None, path=None, backend=None,
-                      alignment=None, **backend_options) -> Dataset
-        # alignment is normally omitted — episode dicts are self-describing
-        # via their initial_observation / final_observation boundary key
+    def from_episodes(
+        cls, episodes, schema=None, path=None, backend=None,
+        alignment=None, **backend_options
+    ) -> Dataset
+
     @classmethod
     def open(cls, path, backend=None) -> Dataset
-        # backend is read from manifest.json; pass it only for storage without one
 
     schema: DatasetSchema
-    num_episodes: int                    # == len(dataset)
+    num_episodes: int
+    backend: StorageBackend
+
     def episode(self, episode_id: int) -> Episode
     def episodes(self) -> Iterator[Episode]
+    def __len__(self) -> int
 
     def add_episode(self, episode, alignment=None) -> Episode
     def new_episode(self, observations=None, infos=None) -> EpisodeWriter
@@ -50,145 +48,320 @@ class Dataset:
     def vector_writer(self, num_envs=None) -> VectorWriter
     def add_step(self, episode_id, step) -> None
     def add_steps(self, episode_id, steps) -> None
-    def end_episode(self, episode_id, terminated=False, truncated=False) -> Episode
+    def end_episode(
+        self, episode_id, terminated=False, truncated=False
+    ) -> Episode
 
-    def segment_stream(self, fields=None, batch_size=1, sequence_length=None,
-               context_length=None, target_length=None, shuffle=True,
-               seed=None, filter=None, pad="suffix") -> SegmentStream
-    def segments(self, fields=None, sequence_length=None, context_length=None,
-                 target_length=None, filter=None, pad="suffix") -> SegmentDataset
-    def sample_transitions(self, batch_size, fields=None, seed=None,
-                           filter=None) -> Batch    # time-squeezed, arrays [B, ...]
+    def segments(
+        self, fields=None, sequence_length=None,
+        context_length=None, target_length=None,
+        filter=None, pad="suffix",
+    ) -> SegmentDataset
+
+    def segment_stream(
+        self, fields=None, batch_size=1, sequence_length=None,
+        context_length=None, target_length=None, shuffle=True,
+        seed=None, filter=None, pad="suffix", sampler=None,
+        read_chunk_size=None,
+    ) -> SegmentStream
+
+    def sample_transitions(
+        self, batch_size, fields=None, seed=None, filter=None
+    ) -> Batch
 
     def copy_to(self, path=None, backend=None, **backend_options) -> Dataset
     def flush(self) -> None
     def close(self) -> None
 ```
 
-**Episode / EpisodeWriter** — lazy reads and online appends (all lengths
-count transitions, i.e. env steps):
+Backend defaults:
 
-```python
+- no `path`: `memory`
+- `path` supplied: `zarr`
+- `backend="npz_directory"`: one compressed file per episode
+
+`from_episodes()` infers a schema from the first episode when `schema` is
+omitted. An `initial_observation` boundary marks action-in input; a
+`final_observation` boundary marks action-out input. Pass `alignment` only for
+ambiguous input without a boundary key. Persisted schemas are never re-inferred
+by `open()`. Bulk `infos` must be paired with `initial_info` (action-in) or
+`final_info` (action-out); info rows are never synthesized.
+
+## Schema
+
+```text
+FieldSpec(
+    key: str,
+    shape: tuple[int, ...],
+    dtype: str,
+    role: str = "observation",
+    low: float | None = None,
+    high: float | None = None,
+    layout: str | None = None,
+    optional: bool = False,
+)
+```
+
+Roles are `observation`, `action`, `reward`, and `info`. `key` is the stable
+logical identifier used at the storage boundary. Nested sources become
+`/`-separated keys.
+
+```text
+class DatasetSchema:
+    def __init__(self, fields: Iterable[FieldSpec])
+
+    fields: dict[str, FieldSpec]
+
+    def field(self, key: str) -> FieldSpec
+    def field_keys(self, role=None) -> list[str]
+    def resolve_fields(self, fields) -> list[str]
+    def validate_fields(self, fields) -> dict[str, np.ndarray]
+
+    @classmethod
+    def infer(cls, example_episode, alignment=None) -> DatasetSchema
+
+    def to_dict(self) -> dict
+    @classmethod
+    def from_dict(cls, value) -> DatasetSchema
+    def to_json(self) -> str
+    @classmethod
+    def from_json(cls, value: str) -> DatasetSchema
+```
+
+`resolve_fields()` accepts exact keys and group prefixes. `validate_fields()`
+requires a leading time dimension, validates per-step shapes, and casts to the
+declared dtype without copying when possible.
+
+Optional Gymnasium conversion:
+
+```text
+from episodata.utils import schema_from_gym_spaces
+
+schema_from_gym_spaces(observation_space, action_space) -> DatasetSchema
+```
+
+It supports `Box`, `Discrete`, `MultiDiscrete`, `MultiBinary`, `Dict`, and
+`Tuple`, and adds a scalar float32 reward field. Requires `episodata[gym]`.
+
+## Episodes and writers
+
+```text
 class Episode:
     id: int
-    length: int               # T env steps == T transitions
-    terminated: bool          # episode-level flags
+    length: int
+    terminated: bool
     truncated: bool
     ongoing: bool
-    def segment(self, start=0, stop=None, fields=None) -> Segment   # arrays [L, ...]
-    def step(self, t: int, fields=None) -> Segment                  # no leading time dim
-    def read(self, fields=None) -> Segment                          # full episode
-    def writer(self) -> EpisodeWriter
 
-class EpisodeWriter:            # stateless handle, keyed by episode_id;
-    episode_id: int             # usable as a context manager
-    def add_step(self, step) -> None       # True terminated/truncated finalizes
-    def add_steps(self, steps) -> None     # leading time dim
+    def __len__(self) -> int
+    def segment(self, start=0, stop=None, fields=None) -> Segment
+    def step(self, t: int, fields=None) -> Segment
+    def read(self, fields=None) -> Segment
+    def writer(self) -> EpisodeWriter
+```
+
+`segment(start, stop)` reads transitions in the half-open interval
+`[start, stop)`. Negative indices are supported. `step()` removes the leading
+time dimension.
+
+```text
+class EpisodeWriter:
+    episode_id: int
+
+    def add_step(self, step) -> None
+    def add_steps(self, steps) -> None
     def end(self, terminated=False, truncated=False) -> Episode
 ```
 
-**VectorWriter** — collection from N parallel environments with staggered
-episode boundaries (next-step autoreset, the Gymnasium 1.0 vector default):
+`add_step()` accepts leaves without a time dimension; `add_steps()` accepts
+leaves with a leading time dimension. A true final `terminated` or `truncated`
+value finalizes the episode. `EpisodeWriter` is a context manager and ends an
+open episode with neither flag on clean exit.
 
-```python
-class VectorWriter:                       # stateful — finish with close()
-    num_envs: int | None                  # inferred from reset() if omitted
-    episode_ids: tuple[int, ...]          # most recent episode id per env
-    def reset(self, observations, infos=None) -> None    # leading [num_envs] dim
-    def step(self, observations, actions=None, rewards=None,
-             terminated=None, truncated=None, infos=None) -> None
-    def close(self, truncate=True) -> None    # finalize still-ongoing episodes
+```text
+class VectorWriter:
+    num_envs: int | None
+    episode_ids: tuple[int, ...]
+
+    def reset(self, observations, infos=None) -> None
+    def step(
+        self, observations, actions=None, rewards=None,
+        terminated=None, truncated=None, infos=None,
+    ) -> None
+    def close(self, truncate=True) -> None
 ```
 
-**ActionOutWriter** — online write-boundary conversion for D4RL-style data
-(action taken *at* its observation); storage stays canonical action-in:
+All inputs carry a leading `num_envs` dimension. `VectorWriter` implements
+next-step autoreset semantics and is stateful; it cannot itself be resumed.
 
-```python
+```text
 class ActionOutWriter:
     def __init__(self, writer: EpisodeWriter)
-    def add_step(self, step) -> None      # obs written now, action/reward held one step
-    def end(self, terminated=False, truncated=False,
-            final_observation=None, final_info=None) -> Episode
+    episode_id: int
+    def add_step(self, step) -> None
+    def end(
+        self, terminated=False, truncated=False,
+        final_observation=None, final_info=None,
+    ) -> Episode
 ```
 
-**Fields / Segment / Batch** — the container hierarchy:
+This adapter converts `(observation_t, action_t, reward_t)` streams into the
+canonical write layout. Without `final_observation`, its final pending action
+and reward are dropped because their resulting observation is unknown.
 
-```python
-class Fields(Mapping):            # one role's fields, handed out by a Segment
-    fields["front_camera"]        # flat field access (also "keyboard/w" paths)
-    fields.front_camera           # field attribute access
-    fields.keyboard.w             # group attribute access -> FieldGroup
+## Segments, batches, and fields
+
+```text
+class Segment:
     schema: DatasetSchema
 
-class Segment:                    # arrays [L, ...] (or unbatched single step)
-    observation: np.ndarray | Fields    # aliases: obs, observations; a role
-    action: np.ndarray | Fields         # holding one bare array unwraps to it
-    reward: np.ndarray | Fields         # aliases: actions, rewards, info(s),
-    info: np.ndarray | Fields           # next_obs, next_observation(s), ...
-    next_observation: np.ndarray | Fields
-    next_info: np.ndarray | Fields
-    all_observations: np.ndarray | Fields   # the L+1 rows obs/next_obs slice:
-    all_infos: np.ndarray | Fields          # [:-1] is obs, [1:] is next_obs
-    terminated: np.ndarray        # True only on a terminal final transition
-    truncated: np.ndarray
-    mask: np.ndarray              # True on real transitions, False on padding
-    schema: DatasetSchema
+    observation                 # aliases: obs, observations
+    action                      # alias: actions
+    reward                      # alias: rewards
+    info                        # alias: infos
+    next_observation            # aliases: next_obs, next_observations
+    next_info                   # alias: next_infos
+    all_observations            # alias: all_obs
+    all_infos
+
+    terminated
+    truncated
+    mask
+
     def select(self, fields: list[str]) -> Segment
-    def map(self, fn) -> Segment  # fn once per field's row buffer; all views
-                                  # re-derived from the result, so a copying
-                                  # conversion (GPU, pinning) never duplicates
-                                  # the obs/next_obs overlap
+    def map(self, fn) -> Segment
 
-class Batch(Segment):             # arrays [B, L, ...], flags [B, L]
-    context: Batch                # time slices when configured with
-    target: Batch                 # context_length / target_length
+class Batch(Segment):
+    context: Batch
+    target: Batch
+    def select(self, fields: list[str]) -> Batch
+    def map(self, fn) -> Batch
 ```
 
-**SegmentStream / SegmentDataset** — SegmentStream is a thin sampling policy
-over SegmentDataset (its `segments` attribute), which owns all segment
-reading, padding and collation:
+Role access returns a bare array when that role contains one field created from
+a non-dict source. Otherwise it returns `Fields`, a read-only `Mapping`:
 
 ```python
-class SegmentDataset:             # map-style; torch DataLoader-compatible
+segment.obs["front_camera"]
+segment.obs.front_camera
+segment.action.keyboard.jump
+segment.action["keyboard/jump"]
+```
+
+Mapping method names win attribute lookup; bracket access always addresses a
+field. `map(fn)` applies `fn` once to every underlying row buffer and flag
+array, then reconstructs all views. `context` and `target` exist when the batch
+was configured with `context_length` and `target_length`.
+
+## Sampling
+
+Sequence configuration follows these rules:
+
+- `sequence_length=N` requests one block of `N` transitions.
+- `context_length=C, target_length=T` requests `C + T` transitions and enables
+  `batch.context` and `batch.target`.
+- With no length argument, the segment length is 1.
+- `sequence_length` and `target_length` are mutually exclusive.
+- `context_length` requires `target_length`.
+
+```text
+class SegmentDataset:
+    dataset: Dataset
+    fields: list[str]
+    segment_length: int
+    context_length: int | None
+    target_length: int | None
+    pad: str | None
+
     def __len__(self) -> int
-    def __getitem__(self, i: int) -> Segment
-    def collate(self, items: list[Segment]) -> Batch   # pass as collate_fn
-    def refresh(self) -> None     # re-snapshot index; no-op unless data changed
+    def __getitem__(self, index: int) -> Segment
+    def __getitems__(self, indices: Sequence[int]) -> list[Segment]
+    def fetch(self, indices: Sequence[int]) -> Batch
+    def collate(self, items: list[Segment]) -> Batch
+    def refresh(self) -> None
+```
 
-class SegmentStream:              # infinite shuffled stream / sequential scan
-    segments: SegmentDataset      # refreshed on every sample()
+The index is a snapshot. `refresh()` rebuilds it only if the backend revision
+changed; call it between DataLoader epochs, never during one. `__getitems__()`
+is PyTorch DataLoader's batched-fetch hook. `fetch()` skips per-item Segment
+objects and returns a `Batch` directly.
+
+```text
+class SegmentStream:
+    segments: SegmentDataset
+    dataset: Dataset
+    fields: list[str]
+    segment_length: int
+    batch_size: int
+    sampler: Sampler
+    read_chunk_size: int
+
     def sample(self) -> Batch
-    def sample_transitions(self) -> Batch   # time-squeezed: t.obs, t.action,
-    def __iter__(self) -> Iterator[Batch]   # t.reward, t.next_obs — all [B, ...]
+    def sample_transitions(self) -> Batch
+    def __iter__(self) -> Iterator[Batch]
 ```
 
-**Schema** — the persistent logical spec:
+When `shuffle=True`, iteration is infinite and samples with replacement. When
+`shuffle=False`, iteration makes one sequential pass. The default
+`read_chunk_size` is `max(batch_size, 2048)`; each refill fetches the largest
+whole number of batches that fit in that chunk. The segment index refreshes on
+refill, so newly written episodes may remain invisible while buffered batches
+are consumed.
 
-```python
-FieldSpec(key, shape, dtype, role="observation", low=None, high=None,
-          layout=None, optional=False)
-# each field carries its own per-step format — the per-leaf model of a
-# Gymnasium Dict space
+```text
+class Sampler(Protocol):
+    def sample(self, index: SegmentIndex, batch_size: int) -> np.ndarray
 
-class DatasetSchema:
-    def __init__(self, fields: Iterable[FieldSpec])
-    @classmethod
-    def infer(cls, example_episode, alignment=None) -> DatasetSchema
-    def field(self, key) -> FieldSpec
-    def field_keys(self, role=None) -> list[str]
-    def to_dict() / from_dict() / to_json() / from_json()
+class UniformSampler:
+    def __init__(self, seed=None)
+    def sample(self, index: SegmentIndex, batch_size: int) -> np.ndarray
 ```
 
-**StorageBackend** — the storage boundary (flat field ids + temporal
-selections; a `T`-step episode is stored as `T + 1` action-in rows, row 0
-being the reset row):
+Sampler output contains flat indices into the supplied segment index.
+`UniformSampler` samples uniformly with replacement.
 
-```python
-Selection(episode_id, start, stop)
+## TensorDict conversion
 
-@register_backend                # registers cls.name; Dataset looks backends up by name
+```text
+from episodata.utils import batch_to_tensordict
+
+batch_to_tensordict(
+    batch: Segment,
+    device=None,
+    include_all_observations=False,
+    alignment=None,
+) -> TensorDict
+```
+
+The default returns the roles at their natural length `L`. Set
+`include_all_observations=True` to add the `L + 1` observation sequence.
+
+`alignment="action_in"` or `"action_out"` instead returns an `L + 1` sequence
+for every entry: observations use their real shared buffer, while action,
+reward, and flag arrays receive one placeholder zero row. Alignment cannot be
+combined with `include_all_observations` and requires a time dimension.
+
+Pass `device` here to preserve shared observation storage during conversion.
+Requires `torch` and `tensordict`.
+
+## Storage backends
+
+Built-ins:
+
+| Name | Implementation |
+|---|---|
+| `memory` | process-local NumPy arrays |
+| `zarr` | chunked Zarr v3 arrays accessed through TensorStore |
+| `npz_directory` | one compressed NumPy archive per episode |
+
+The extension boundary is deliberately small:
+
+```text
+Selection(episode_id: int, start: int, stop: int)
+
 class StorageBackend(ABC):
     name: str
+
     @classmethod
     def create(cls, schema, path=None, **options) -> StorageBackend
     @classmethod
@@ -196,13 +369,48 @@ class StorageBackend(ABC):
 
     schema: DatasetSchema
     num_episodes: int
-    revision: int                 # bumped on every write; drives SegmentDataset.refresh
-    def read_fields(self, field_ids, selection) -> Mapping[str, np.ndarray]
+    revision: int
+
+    def episode_length(self, episode_id) -> int
+    def episode_terminated(self, episode_id) -> bool
+    def episode_truncated(self, episode_id) -> bool
+    def episode_ongoing(self, episode_id) -> bool
+
+    def read_fields(
+        self,
+        field_ids: Sequence[str],
+        selections: Sequence[Selection],
+    ) -> Sequence[Mapping[str, np.ndarray]]
+
     def create_episode(self) -> int
     def append_steps(self, episode_id, fields) -> None
-    def append_steps_batch(self, episode_ids, fields) -> None   # one row per episode
-    def finalize_episode(self, episode_id, terminated, truncated) -> None
-    def episode_length / episode_terminated / episode_truncated / episode_ongoing
+    def append_steps_batch(self, episode_ids, fields) -> None
+    def finalize_episode(
+        self, episode_id, terminated, truncated
+    ) -> None
     def flush(self) -> None
     def close(self) -> None
 ```
+
+`read_fields()` is always batched and preserves selection order. Each returned
+array has shape `[selection.length, *field.shape]` in the logical dtype and
+layout.
+
+Backends operate on internal action-in rows: an episode with `T` transitions
+has `T + 1` storage rows, including its reset row. Consequently,
+`StorageBackend.episode_length()` reports row count, while public
+`Episode.length` reports transition count. Register an implementation with
+`@register_backend`; the backend name is persisted in the dataset manifest.
+
+## Module map
+
+| Module | Responsibility |
+|---|---|
+| `schema.py` | field identity, formats, validation, serialization |
+| `dataset.py` | entry point and write/query factories |
+| `episode.py` | lazy episode reads and single-episode writes |
+| `segment.py`, `fields.py` | transition-aligned containers and role access |
+| `sampling.py`, `sampler.py` | segment indexing, batched fetches, sampling policy |
+| `vector.py`, `action_out.py` | collection adapters |
+| `backends/` | storage contract and built-in implementations |
+| `utils.py` | optional Gymnasium and TensorDict interop |

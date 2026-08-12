@@ -1,24 +1,25 @@
 """Query and sampling API.
 
-A :class:`SegmentStream` is a declarative description of what the user wants —
-fields, segment shape, batch size, filtering — decoupled from how the
-backend executes the reads. The v1 execution strategy is straightforward
-per-segment reads; a backend-aware planner can replace it later without
-changing this API.
+A :class:`SegmentStream` describes what the user wants — fields, segment
+shape, batch size, filtering and sampling policy — independently of how the
+backend executes the reads. Every batched query resolves all requested
+windows first and sends them to the backend in one call, so storage-specific
+overhead is amortized without leaking into the query API.
 
 A segment is a window of *transitions* (see :mod:`episodata.segment` for the
 transition contract), and ``sequence_length`` / ``context_length`` /
-``target_length`` count transitions. Segments are sampled uniformly over all
-valid (episode, start) pairs. An episode shorter than the segment still
-contributes one segment: its row buffer is zero-padded up to the segment
-length (at the end by default, at the start with ``pad="prefix"``), and the
-per-transition ``mask`` marks which transitions are real.
+``target_length`` count transitions. By default, segments are sampled
+uniformly over all valid (episode, start) pairs; a custom :class:`Sampler`
+can replace that policy. An episode shorter than the segment still contributes
+one segment: its row buffer is zero-padded up to the segment length (at the end
+by default, at the start with ``pad="prefix"``), and the per-transition
+``mask`` marks which transitions are real.
 :class:`SegmentDataset` (a map-style, indexable view — suited to
 ``torch.utils.data.DataLoader`` and its ``num_workers`` parallelism) is
-where segments are read, padded and collated; :class:`SegmentStream` (an
-infinite, shuffled, with-replacement stream) is a thin sampling policy on
-top of it, drawing random indices and collating ``segments[i]`` items into
-batches — one source of truth for segment semantics.
+where indices are resolved and segments are read, padded and batched.
+:class:`SegmentStream` (an infinite, shuffled stream by default) is a sampling
+policy over it, using :meth:`SegmentDataset.fetch` and buffering larger read
+chunks — one source of truth for segment semantics and batched access.
 """
 
 from __future__ import annotations

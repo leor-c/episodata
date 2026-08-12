@@ -1,75 +1,49 @@
 # Getting started
 
-`episodata` stores episodic data — robotics rollouts, game trajectories, any
-sequential-decision data — behind one API that doesn't change as your
-dataset grows from a handful of toy episodes to millions of steps on disk.
-
-This guide covers the design in a few minutes. For copy-pasteable examples,
-see [`examples/getting_started.ipynb`](../examples/getting_started.ipynb).
-For the full API, see the [README](../README.md).
+This guide covers the few concepts needed to use Episodata confidently. See
+the [API reference](api.md) for complete signatures and the
+[notebook](../examples/getting_started.ipynb) for a runnable tour.
 
 ## Install
 
 ```bash
-pip install episodata          # memory + npz_directory + zarr backends (Python >= 3.11)
-pip install "episodata[gym]"   # + schema_from_gym_spaces (episodata.utils)
+pip install episodata
+pip install "episodata[gym]"       # optional: Gymnasium schema conversion
 ```
 
-## Design in three layers
+The core package requires Python 3.11 or newer and exposes NumPy arrays.
 
+## Mental model
+
+Episodata separates three concerns:
+
+```text
+DatasetSchema  ->  Episode / Segment / Batch  ->  StorageBackend
+ meaning             queries and sampling           persistence
 ```
-logical data model  →  query & sampling API  →  storage backend
-   (schema)             (episodes, segments)      (replaceable)
+
+A schema describes each field's role, per-step shape, and dtype. An episode
+contains `T` environment steps. Reads return `T` transitions, regardless of
+the backend.
+
+For a segment of `L` transitions:
+
+```text
+observations:      o0  o1  ...  oL-1
+actions/rewards:   a0  a1  ...  aL-1
+next_observations: o1  o2  ...  oL
+all_observations:  o0  o1  ...  oL-1  oL
 ```
 
-1. **Logical data model.** A dataset is episodes plus a schema. The schema
-   is named *fields* (`front_camera`, `state`, `action`, `reward`, ...),
-   each declaring its own per-step shape and dtype — like the keys of a
-   Gymnasium `Dict` space. The schema is data, not code: it's inferred
-   automatically or declared up front.
+Thus `segment.obs[i]`, `segment.action[i]`, `segment.reward[i]`, and
+`segment.next_obs[i]` always describe one transition. The two observation
+views overlap in one `L + 1` row buffer.
 
-2. **Query and sampling API.** You read data through `Episode` and
-   `Segment`, and sample it through `segment_stream` /
-   `sample_transitions` — the same calls whether the dataset lives in
-   memory or spans a terabyte on disk.
+## 1. Create a dataset
 
-3. **Storage backend.** `StorageBackend` is the one interface a backend
-   implements: reads, appends, and the episode index. `memory`,
-   `npz_directory`, and `zarr` ship built in; `Dataset.open` reads the
-   backend out of the dataset's manifest, so calling code never names one.
+### Before data exists
 
-The payoff: prototype in memory, then `Dataset.from_episodes(..., path=...)`
-to persist — chunked, scalable `zarr` storage by default — without touching
-a single line downstream.
-
-## One idea worth knowing: everything counts env steps
-
-An episode that took `T` `env.step` calls has length `T` everywhere: `T`
-entries per field on write, `episode.length == T`, and `T` *transitions* on
-read. The reset observation is written as its own explicitly named key
-(`initial_observation` — what `env.reset()` returned), and reads pair every
-array by name — `actions[i]` is the action taken at `observations[i]`,
-`next_observations[i]` is what it produced — so there is no alignment
-convention to learn and no dummy values anywhere, in or out.
-
-`terminated` and `truncated` are separate signals, exactly as in Gymnasium.
-D4RL-style "action-out" data (action paired with the observation it was
-taken *at*) is converted once at the write boundary, marked by a
-`final_observation` key instead of `initial_observation` — see the README's
-[Action-out data](../README.md#action-out-data) section — so everything
-downstream is shared.
-
-## Quick start
-
-To create a dataset, a *schema* is required. When starting from scratch (an
-empty dataset), the schema can be declared by hand or built automatically
-from the environment's structure (currently supported for Gymnasium envs).
-
-### Starting a new dataset from scratch
-
-`Dataset.create` takes a schema, giving back an empty dataset. Build the schema from the
-env's spaces, create the dataset, then collect with the same reset/step
-loop as any Gymnasium rollout:
+Create a schema from Gymnasium spaces:
 
 ```python
 import gymnasium as gym
@@ -78,293 +52,318 @@ from episodata.utils import schema_from_gym_spaces
 
 env = gym.make("CartPole-v1")
 schema = schema_from_gym_spaces(env.observation_space, env.action_space)
-dataset = Dataset.create(schema, path="cartpole_data")  # zero episodes, ready to collect
-assert dataset.num_episodes == 0
-
-for _ in range(10):
-    obs, info = env.reset()
-    writer = dataset.new_episode(obs, infos=info)
-    terminated = truncated = False
-    while not (terminated or truncated):
-        action = env.action_space.sample()
-        obs, reward, terminated, truncated, info = env.step(action)
-        writer.add_step({
-            "observations": obs, "actions": action, "rewards": reward,
-            "terminated": terminated, "truncated": truncated,
-        })
-
-dataset.num_episodes  # 10 — sampleable immediately, same API as any dataset
+dataset = Dataset.create(schema, path="cartpole")
 ```
 
-`path="cartpole_data"` persists to `zarr` (the default backend whenever a
-path is given); drop it to collect in memory instead. Either way,
-`new_episode` / `add_step` below is the same API — this is just the
-version that starts from nothing.
-
-### Manually declaring a schema
-
-`schema_from_gym_spaces` is convenient, but only covers Gymnasium envs. For
-anything else — a different env API, or no env at all yet — declare the
-schema by hand. `DatasetSchema` is always just a list of `FieldSpec`, one
-per field, each declaring its own per-step shape/dtype (the per-leaf model
-of a Gymnasium `Dict` space):
+Or declare it directly:
 
 ```python
 from episodata import Dataset, DatasetSchema, FieldSpec
 
-schema = DatasetSchema(fields=[
-    FieldSpec("front_camera", shape=(3, 64, 64), dtype="uint8", low=0, high=255, layout="CHW"),
-    FieldSpec("state", shape=(7,), dtype="float32"),                  # role defaults to "observation"
-    FieldSpec("action", shape=(4,), dtype="float32", role="action", low=-1.0, high=1.0),
+schema = DatasetSchema([
+    FieldSpec("image", shape=(64, 64, 3), dtype="uint8", layout="HWC"),
+    FieldSpec("state", shape=(12,), dtype="float32"),
+    FieldSpec("control", shape=(4,), dtype="float32", role="action"),
     FieldSpec("reward", shape=(), dtype="float32", role="reward"),
 ])
-dataset = Dataset.create(schema, path="my_dataset")  # zero episodes, ready to collect
+dataset = Dataset.create(schema)
 ```
 
-`key` is the stable logical id used across the storage boundary and `shape`
-excludes the leading time dimension; `low`/`high` are optional bounds and
-`layout` only applies to image-shaped fields. `terminated`/`truncated`
-aren't schema fields — they're episode-level signals the write API handles
-separately (see [Collecting data online](#collecting-data-online-two-ways)).
+`shape` never includes a time or batch dimension. The supported roles are
+`observation`, `action`, `reward`, and `info`; the default is `observation`.
 
-### Starting from existing episodes
+### From existing episodes
 
-When existing episodes are available, the schema can be inferred automatically:
+Use `initial_observation` for the reset observation and one entry per
+environment step for every temporal field:
 
 ```python
 import numpy as np
 from episodata import Dataset
 
 episodes = [{
-    "initial_observation": {  # what env.reset() returned
-        "front_camera": np.zeros((3, 64, 64), dtype=np.uint8),
-        "state": np.zeros(7, dtype=np.float32),
-    },
-    "observations": {         # one entry per step, like every other field
-        "front_camera": np.zeros((100, 3, 64, 64), dtype=np.uint8),
-        "state": np.zeros((100, 7), dtype=np.float32),
-    },
-    "actions": np.zeros((100, 4), dtype=np.float32),
-    "rewards": np.zeros(100, dtype=np.float32),
+    "initial_observation": np.zeros(6, dtype=np.float32),
+    "observations": np.zeros((20, 6), dtype=np.float32),
+    "actions": np.zeros((20, 2), dtype=np.float32),
+    "rewards": np.zeros(20, dtype=np.float32),
     "terminated": True,
+    "truncated": False,
 }]
 
-dataset = Dataset.from_episodes(episodes)  # schema inferred automatically
+dataset = Dataset.from_episodes(episodes)                       # memory
+dataset = Dataset.from_episodes(episodes, path="training_data") # zarr
 ```
 
-## Reading data
+The schema is inferred from the first episode unless supplied explicitly.
+After creation, the schema is authoritative and persisted with the dataset.
+
+## 2. Write episodes
+
+The online API mirrors a Gymnasium rollout. `new_episode()` records the reset
+observation, and each `add_step()` records one call to `env.step()`:
 
 ```python
-seg = dataset.episode(0).segment(0, 8)   # transitions [0, 8) of episode 0
+obs, _ = env.reset()
+writer = dataset.new_episode(obs)
 
-seg.obs.front_camera       # [8, ...] the obs each action was taken at
-seg.next_obs.front_camera  # ... and the obs each action produced
-seg.action, seg.reward     # bare action/reward arrays resolve directly
-seg.terminated             # [8] done flag of each transition
+while True:
+    action = policy(obs)
+    obs, reward, terminated, truncated, _ = env.step(action)
+    writer.add_step({
+        "observations": obs,
+        "actions": action,
+        "rewards": reward,
+        "terminated": terminated,
+        "truncated": truncated,
+    })
+    if terminated or truncated:
+        break
 ```
 
-Access is role-first: `seg.observation` / `seg.obs` / `seg.observations`
-are aliases for the same object, and a role holding one bare array (a
-non-dict source) resolves straight to that array — hence `seg.action`.
-`seg.obs`, `seg.next_obs` and the action/reward arrays are zero-copy views
-into one shared row buffer, so consecutive-in-time arrays never duplicate
-memory; a segment starting at 0 surfaces the reset observation as
-`seg.obs[k][0]`.
+A true termination signal finalizes the episode. Otherwise close it explicitly:
 
-## Sampling for training
+```python
+episode = writer.end(truncated=True)
+```
 
-### Map-style: `segments()` + `DataLoader`
+Writers are stateless handles. An ongoing episode can be resumed by ID, even
+after reopening persistent storage:
 
-These two subsections use `torch` for the `DataLoader` examples (`pip
-install torch`) — a demo-only dependency, not one of episodata's own.
+```python
+episode_id = writer.episode_id
+dataset.flush()
 
-`dataset.segments(...)` is an indexable, map-style view over fixed-length
-segments — plain `len()` / `[i]`, so it plugs directly into
-`torch.utils.data.DataLoader` for `num_workers` read parallelism (each
-worker decompresses its own share of episodes independently):
+dataset = Dataset.open("training_data")
+writer = dataset.resume_episode(episode_id)
+```
+
+Use `writer.add_steps(segment)` to append several steps with a leading time
+dimension. Equivalent ID-based methods are available on `Dataset`.
+
+### Vectorized environments
+
+`VectorWriter` accepts arrays with a leading environment dimension and tracks
+one episode per environment. It implements next-step autoreset semantics: after
+an environment finishes, its next observation begins the next episode.
+
+```python
+writer = dataset.vector_writer()
+obs, _ = envs.reset()
+writer.reset(obs)
+
+for _ in range(num_steps):
+    actions = policy(obs)
+    obs, rewards, terminated, truncated, _ = envs.step(actions)
+    writer.step(
+        obs,
+        actions=actions,
+        rewards=rewards,
+        terminated=terminated,
+        truncated=truncated,
+    )
+
+writer.close()             # remaining episodes become truncated
+```
+
+For same-step autoreset environments, keep one ordinary `EpisodeWriter` per
+environment and write the true final observation from the environment's info.
+
+## 3. Read episodes
+
+`Episode` is lazy: data is read only when `read`, `segment`, or `step` is
+called.
+
+```python
+episode = dataset.episode(0)
+
+len(episode)                       # number of transitions
+episode.read()                     # full episode
+episode.segment(4, 12)             # transitions [4, 12)
+transition = episode.step(4)       # time dimension removed
+```
+
+Role-first access works uniformly for segments and batches:
+
+```python
+segment = episode.segment(4, 12)
+
+segment.obs.state
+segment.next_obs.state
+segment.action
+segment.reward
+segment.terminated
+```
+
+A role backed by a single array unwraps to that array. Dict observations or
+actions return a mapping with item and attribute access. Nested fields are
+flattened to `/`-separated schema keys:
+
+```python
+segment.action["keyboard/jump"]
+segment.action.keyboard.jump
+```
+
+Field selection accepts exact keys or group prefixes:
+
+```python
+segment = episode.read(fields=["image", "keyboard"])
+```
+
+## 4. Sample training data
+
+### Map-style dataset
+
+Use `segments()` with PyTorch's `DataLoader` when you want its shuffling,
+samplers, and worker processes:
 
 ```python
 from torch.utils.data import DataLoader
 
-segments = dataset.segments(fields=["front_camera", "state", "action"], sequence_length=8)
+segments = dataset.segments(sequence_length=16)
 loader = DataLoader(
-    segments, batch_size=32, shuffle=True,
-    num_workers=4, collate_fn=segments.collate,
+    segments,
+    batch_size=64,
+    shuffle=True,
+    num_workers=4,
+    collate_fn=segments.collate,
 )
-for batch in loader: ...   # episodata.Batch, arrays [B, L, ...]
-```
 
-`episodata` itself never imports torch — `segments[i]` returns a `Segment`
-and works standalone with no torch installed.
-
-### To the device: `batch.map`
-
-`obs` and `next_obs` are views of one shared buffer; converting them to
-tensors one accessor at a time would copy their overlap twice. `map(fn)`
-converts a whole batch in one pass — `fn` runs once per field, and the
-result is a regular `Batch` whose views still share storage on the other
-side:
-
-```python
 for batch in loader:
-    batch = batch.map(lambda a: torch.as_tensor(a).to("cuda"))
-    batch.obs.front_camera       # cuda tensor ...
-    batch.next_obs.front_camera  # ... same allocation — nothing duplicated
+    ...
 ```
 
-`fn` is any array → array-like callable, so the same one-liner covers jax,
-cupy, dtype casts, or pinned-memory staging. See the README's
-[Converting to tensors](../README.md#converting-to-tensors-segmentmap)
-section for details, including `all_observations` — direct access to the
-`L + 1` observations a window spans.
+`segments[i]` returns one `Segment`. DataLoader automatically uses Episodata's
+batched-fetch hook, so a loader batch requires one backend read rather than one
+read per segment. On a growing dataset, call `segments.refresh()` between
+epochs; do not change its index during an epoch.
 
-### Custom samplers: prioritized replay
+### Streaming sampler
 
-`segments()` is a plain map-style dataset, so *any* `torch.utils.data.Sampler`
-works over it — `DataLoader`'s `sampler` argument replaces `shuffle` with
-your own draw order. Prioritization itself is entirely outside episodata:
-compute priorities however you like (TD-error, recency, ...) and hand
-`DataLoader` a `Sampler` that draws indices accordingly:
-
-```python
-from torch.utils.data import Sampler
-
-class PrioritizedSampler(Sampler):
-    """Draws segment indices with replacement, weighted by external priorities."""
-
-    def __init__(self, priorities, num_samples, seed=None):
-        self.priorities = np.asarray(priorities, dtype=np.float64)
-        self.num_samples = num_samples
-        self.rng = np.random.default_rng(seed)
-
-    def __iter__(self):
-        probs = self.priorities / self.priorities.sum()
-        return iter(self.rng.choice(len(self.priorities), size=self.num_samples, p=probs).tolist())
-
-    def __len__(self):
-        return self.num_samples
-
-sampler = PrioritizedSampler(priorities, num_samples=len(segments), seed=0)
-loader = DataLoader(segments, batch_size=32, sampler=sampler, collate_fn=segments.collate)
-```
-
-Recompute `priorities` and rebuild the sampler as often as your algorithm
-needs (each step, each epoch, ...) — episodata only supplies the indexable
-segments; how they're drawn is entirely up to the caller.
-
-### Streaming: `segment_stream()`
-
-For a simpler infinite, shuffled, single-process stream — no `DataLoader`
-needed — with optional `context` / `target` splitting for world-model
-training (all lengths count transitions):
+Use `segment_stream()` for an infinite, single-process stream:
 
 ```python
 stream = dataset.segment_stream(
-    fields=["front_camera", "state", "action"],
-    context_length=4, target_length=32,   # or sequence_length=N for one block
-    batch_size=64, seed=0,
+    context_length=8,
+    target_length=24,
+    batch_size=64,
+    seed=0,
 )
-batch = stream.sample()          # arrays [B, L, ...]
-batch.context, batch.target      # time-sliced views; target.observation
-                                 # starts where context.next_observation ends
 
-transitions = dataset.sample_transitions(batch_size=256)  # arrays [B, ...]
-transitions.obs, transitions.action, transitions.next_obs
+batch = stream.sample()
+batch.context
+batch.target
 ```
 
-## Persisting and scaling up
+Sampling is uniform over all valid `(episode, start)` windows, with replacement.
+The stream fetches `max(batch_size, 2048)` segments per backend call by default
+and buffers the resulting batches. Set `read_chunk_size` to tune throughput and
+memory use. On a growing dataset, new episodes become visible at the next
+buffer refill.
+
+A custom stream sampler only needs to return flat segment indices:
 
 ```python
-dataset = Dataset.from_episodes(episodes, path="my_dataset")  # zarr, chunked reads
-dataset = Dataset.open("my_dataset")                          # reopen anywhere
+import numpy as np
 
-# Want plain, individually-inspectable .npz-per-episode files instead?
-dataset = Dataset.from_episodes(episodes, path="my_dataset", backend="npz_directory")
-small = Dataset.open("my_dataset").copy_to("my_dataset_zarr", backend="zarr")
+class WeightedSampler:
+    def __init__(self, weights, seed=None):
+        self.weights = np.asarray(weights, dtype=np.float64)
+        self.rng = np.random.default_rng(seed)
+
+    def sample(self, index, batch_size):
+        probabilities = self.weights / self.weights.sum()
+        return self.rng.choice(len(index), size=batch_size, p=probabilities)
+
+stream = dataset.segment_stream(
+    sequence_length=16,
+    batch_size=64,
+    sampler=WeightedSampler(priorities, seed=0),
+)
 ```
 
-## Collecting data online, two ways
+For a finite sequential pass, iterate a stream with `shuffle=False`. For
+individual random transitions, use `dataset.sample_transitions(batch_size)`.
 
-The write API mirrors a Gymnasium rollout one-to-one: `new_episode` records
-what `env.reset()` returned (the initial observation), then one `add_step`
-call per `env.step`. The usual way is a writer, kept for the lifetime of
-the rollout:
+### Padding
+
+An episode shorter than the requested sequence contributes one segment:
+
+- `pad="suffix"` pads its end; this is the default.
+- `pad="prefix"` pads its beginning.
+- `pad=None` excludes it.
+
+`batch.mask` is true only for real transitions. Terminal and truncated flags
+remain aligned with the episode's real final transition.
+
+## 5. Convert batches
+
+Use `map()` for any conversion that may copy data. It converts each underlying
+field buffer once and then rebuilds the overlapping role views:
 
 ```python
-writer = dataset.new_episode(obs, infos=info)
-
-obs, reward, terminated, truncated, info = env.step(action)
-writer.add_step({
-    "observations": obs, "actions": action, "rewards": reward,
-    "terminated": terminated, "truncated": truncated,
-})
-# a True signal finalizes the episode, exactly as it ends the Gym episode
+batch = batch.map(lambda array: torch.as_tensor(array).to("cuda"))
 ```
 
-A writer is a stateless handle — only its `episode_id` needs to be kept. The
-same operations exist directly on `Dataset` by id, useful when you'd rather
-not carry a writer object around (e.g. across process boundaries), or want
-to append a whole segment in one call instead of step by step:
+For TensorDict:
 
 ```python
-episode_id = dataset.new_episode(obs).episode_id  # writer discarded; only the id is kept
+from episodata.utils import batch_to_tensordict
 
-dataset.add_steps(episode_id, {                 # a whole segment, one call
-    "observations": obs_segment, "actions": action_segment,
-    "rewards": reward_segment, "terminated": terminated_segment,
-})
-dataset.end_episode(episode_id, terminated=True)  # or let a True signal finalize it
+td = batch_to_tensordict(batch, device="cuda")
 ```
 
-## Collecting from vectorized environments
+Install the optional packages with `pip install torch tensordict`. Use
+`include_all_observations=True` to include the `L + 1` sequence. Use
+`alignment="action_in"` or `alignment="action_out"` only when a downstream
+TensorDict consumer requires every entry to have length `L + 1`; the missing
+action/reward/flag row is zero-filled.
 
-For N parallel environments, `dataset.vector_writer()` drives one ongoing
-episode per env and handles their staggered boundaries: when env `i`
-reports `terminated`/`truncated`, its episode finalizes, and on the *next*
-step that env's observation starts a fresh episode as its initial observation. This
-is next-step autoreset — the Gymnasium 1.0 vector default — and the loop is
-just the vector rollout, forwarded:
+## Action-out sources
+
+Sources such as D4RL often store the action taken *at* each observation. Mark a
+bulk episode with `final_observation`; Episodata converts it at the write
+boundary:
 
 ```python
-envs = gym.make_vec("CartPole-v1", num_envs=8)  # any vec env; the writer takes plain arrays
-
-vec = dataset.vector_writer()
-obs, infos = envs.reset(seed=0)
-vec.reset(obs)
-
-for _ in range(num_steps):
-    actions = policy(obs)
-    obs, rewards, terminated, truncated, infos = envs.step(actions)
-    vec.step(obs, actions=actions, rewards=rewards,
-             terminated=terminated, truncated=truncated)
-
-vec.close()  # still-ongoing episodes are finalized as truncated
+episode = {
+    "observations": observations,
+    "actions": actions,
+    "rewards": rewards,
+    "final_observation": final_observation,
+    "terminated": True,
+}
+dataset = Dataset.from_episodes([episode])
 ```
 
-All values carry a leading `num_envs` dimension; the writer never imports
-an environment library, so any vec env source works (EnvPool, custom sims,
-GPU rollouts after `.cpu().numpy()`). Per-step infos are accepted as a dict
-of dense `[N, ...]` arrays — scattering Gymnasium's `_key`-masked info
-dicts into dense arrays is up to you.
-
-Vec envs using the *same-step* convention (older Gymnasium, SB3: the done
-step already returns the next episode's reset obs, and the true final
-observation hides in `infos`) don't need `VectorWriter` — drive one writer
-per env; interleaved open episodes are fully supported:
+For streaming action-out data, wrap an empty writer:
 
 ```python
-writers = [dataset.new_episode(o) for o in reset_obs]      # one per env
-# per env i on each step:
-writers[i].add_step({"observations": final_obs_i if done_i else obs[i],
-                     "actions": actions[i], "rewards": rewards[i],
-                     "terminated": terminated[i], "truncated": truncated[i]})
-if done_i:
-    writers[i] = dataset.new_episode(obs[i])               # obs[i] is already the reset obs
+from episodata import ActionOutWriter
+
+writer = ActionOutWriter(dataset.new_episode())
+writer.add_step({"observations": obs, "actions": action, "rewards": reward})
+episode = writer.end(terminated=True, final_observation=final_obs)
 ```
 
-## Next steps
+Every subsequent read uses the ordinary transition API; alignment is never a
+read-time concern.
 
-- [`examples/getting_started.ipynb`](../examples/getting_started.ipynb) — a
-  runnable tour of everything above.
-- [README](../README.md) — full API reference: hierarchical fields,
-  schema refinement, backend internals, action-out conversion.
+## Storage choices
+
+```python
+Dataset.create(schema)                                      # memory
+Dataset.create(schema, path="data")                         # zarr
+Dataset.create(schema, path="data", backend="npz_directory")
+Dataset.open("data")                                        # backend from manifest
+```
+
+Choose `zarr` for long episodes, large observations, or random segment reads.
+It stores standard Zarr v3 arrays and uses TensorStore for batched I/O. Choose
+`npz_directory` when simple per-episode archives matter more than partial-read
+performance.
+
+Migrate through the logical API:
+
+```python
+Dataset.open("npz_data").copy_to("zarr_data", backend="zarr")
+```
